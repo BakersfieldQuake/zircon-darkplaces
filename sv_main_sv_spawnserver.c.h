@@ -72,6 +72,9 @@ func_t foff;
 	// free q3 shaders so that any newly downloaded shaders will be active
 	Mod_FreeQ3Shaders();
 
+	// mod_freebeforeload: release the previous map now, not after this one has been loaded
+	Mod_FreeBeforeSpawn(modelname);
+
 	worldmodel = Mod_ForName (modelname, false, developer.integer > 0, NULL);
 	if (!worldmodel || !worldmodel->TraceBox) {
 		Con_PrintLinef ("Couldn't load map %s", modelname);

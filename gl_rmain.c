@@ -2435,6 +2435,42 @@ void R_SkinFrame_Purge(void)
 	}
 }
 
+// Early purge (mod_freebeforeload): the skinframes of models that are about to be unloaded are tagged, the ones a
+// remaining user still needs are untagged again (R_SkinFrame_Untag, or R_SkinFrame_MarkUsed), the rest is purged.
+// The loadsequence counter wraps below 200, so the tag value never collides with it.
+#define SKINFRAME_TAGGEDFORPURGE 0x40000000
+
+void R_SkinFrame_Tag(skinframe_t *skinframe)
+{
+	// loadsequence 0 means "already purged" or "never purge"
+	if (skinframe && skinframe->loadsequence)
+		skinframe->loadsequence = SKINFRAME_TAGGEDFORPURGE;
+}
+
+void R_SkinFrame_Untag(skinframe_t *skinframe)
+{
+	if (skinframe && skinframe->loadsequence == SKINFRAME_TAGGEDFORPURGE)
+		skinframe->loadsequence = r_skinframe.loadsequence ? r_skinframe.loadsequence : 1;
+}
+
+int R_SkinFrame_PurgeTagged(void)
+{
+	int i, count = 0;
+	skinframe_t *s;
+	for (i = 0;i < SKINFRAME_HASH;i++)
+	{
+		for (s = r_skinframe.hash[i];s;s = s->next)
+		{
+			if (s->loadsequence == SKINFRAME_TAGGEDFORPURGE)
+			{
+				R_SkinFrame_PurgeSkinFrame(s);
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
 skinframe_t *R_SkinFrame_FindNextByName( skinframe_t *last, const char *name ) {
 	skinframe_t *item;
 	char basename[MAX_QPATH_128];

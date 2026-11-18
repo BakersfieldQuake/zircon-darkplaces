@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "polygon.h"
 
 cvar_t r_mipskins = {CF_CLIENT | CF_ARCHIVE, "r_mipskins", "0", "mipmaps model skins so they render faster in the distance and do not display noise artifacts, can cause discoloration of skins if they contain undesirable border colors"};
+cvar_t mod_freebeforeload = {CF_CLIENT, "mod_freebeforeload", "0", "frees the previous map before the next one is loaded instead of after it, so that a map change does not need the memory of both maps at once: 0 = off, 1 = the old world model with its lightmaps and textures (when joining a server: every model the new map does not use), 2 = when hosting, every model (lowest peak, but models both maps use are loaded again)"};
 cvar_t r_mipnormalmaps = {CF_CLIENT | CF_ARCHIVE, "r_mipnormalmaps", "1", "mipmaps normalmaps (turning it off looks sharper but may have aliasing)"};
 cvar_t mod_generatelightmaps_unitspersample = {CF_CLIENT | CF_ARCHIVE, "mod_generatelightmaps_unitspersample", "8", "lightmap resolution"};
 cvar_t mod_generatelightmaps_borderpixels = {CF_CLIENT | CF_ARCHIVE, "mod_generatelightmaps_borderpixels", "2", "extra space around polygons to prevent sampling artifacts"};
@@ -573,6 +574,114 @@ void Mod_PurgeUnused(void)
 			Mem_ExpandableArray_FreeRecord(&models, mod);
 		} // if
 	} // for
+}
+
+// tags (or untags) every skinframe a model references; the same set mod_newmap marks as used
+static void Mod_FreeEarly_TagSkinFrames(const model_t *mod, qbool tag)
+{
+	int j, k, l;
+	// submodels of a map have no mempool: their textures belong to the world model
+	if (!mod->mempool)
+		return;
+	for (j = 0;j < mod->num_textures && mod->data_textures;j++) {
+		for (l = 0; l < Q3SHADER_MAXLAYERS_8; l++) {
+			if (!mod->data_textures[j].shaderpasses[l])
+				continue;
+			for (k = 0; k < mod->data_textures[j].shaderpasses[l]->numframes; k++) {
+				if (tag)
+					R_SkinFrame_Tag(mod->data_textures[j].shaderpasses[l]->skinframes[k]);
+				else
+					R_SkinFrame_Untag(mod->data_textures[j].shaderpasses[l]->skinframes[k]);
+			}
+		}
+	}
+	if (tag) {
+		R_SkinFrame_Tag(mod->brush.solidskyskinframe);
+		R_SkinFrame_Tag(mod->brush.alphaskyskinframe);
+	} else {
+		R_SkinFrame_Untag(mod->brush.solidskyskinframe);
+		R_SkinFrame_Untag(mod->brush.alphaskyskinframe);
+	}
+}
+
+#define MOD_FREEEARLY_UNUSED 0		// every model that is not marked used
+#define MOD_FREEEARLY_WORLD 1		// oldworld and its submodels
+#define MOD_FREEEARLY_ALL 2			// every model
+
+// Unloads models, and the textures only they used, right now. Normally that happens after the next map has been
+// loaded (Mod_PurgeUnused at the end of signon, R_SkinFrame_Purge in R_Modules_NewMap).
+// The model_t records stay (Mod_PurgeUnused removes them later as usual), so a pointer to one of them sees an
+// unloaded model, not freed memory. The caller makes sure nothing draws or traces against them any more.
+static void Mod_FreeEarly(int which, const model_t *oldworld)
+{
+	int i, nummodels = (int)Mem_ExpandableArray_IndexRange(&models);
+	int nummodelsfreed = 0, numskinframesfreed;
+	model_t *mod;
+#define MOD_FREEEARLY_GOES(m) (which == MOD_FREEEARLY_ALL || (which == MOD_FREEEARLY_WORLD && ((m) == oldworld || (m)->brush.parentmodel == oldworld)) || (which == MOD_FREEEARLY_UNUSED && !(m)->used))
+
+	for (i = 0;i < nummodels;i++)
+		if ((mod = (model_t*) Mem_ExpandableArray_RecordAtIndex(&models, i)) && mod->model_name[0] && MOD_FREEEARLY_GOES(mod))
+			Mod_FreeEarly_TagSkinFrames(mod, true);
+
+	// submodels first: they point into the memory of their world model
+	for (i = 0;i < nummodels;i++)
+		if ((mod = (model_t*) Mem_ExpandableArray_RecordAtIndex(&models, i)) && mod->model_name[0] && mod->brush.parentmodel && MOD_FREEEARLY_GOES(mod))
+			Mod_UnloadModel(mod);
+	for (i = 0;i < nummodels;i++) {
+		if ((mod = (model_t*) Mem_ExpandableArray_RecordAtIndex(&models, i)) && mod->model_name[0] && (mod->loaded || mod->mempool) && MOD_FREEEARLY_GOES(mod)) {
+			Mod_UnloadModel(mod);
+			nummodelsfreed++;
+		}
+	}
+
+	// keep every texture a model that stays still uses, and the persistent 2D pictures
+	for (i = 0;i < nummodels;i++)
+		if ((mod = (model_t*) Mem_ExpandableArray_RecordAtIndex(&models, i)) && mod->model_name[0])
+			Mod_FreeEarly_TagSkinFrames(mod, false);
+	Draw_MarkPersistentPicsUsed();
+	numskinframesfreed = R_SkinFrame_PurgeTagged();
+#undef MOD_FREEEARLY_GOES
+
+	Con_PrintLinef ("mod_freebeforeload: freed %d models and %d textures before loading", nummodelsfreed, numskinframesfreed);
+}
+
+static char mod_freeearly_lastworldname[MAX_QPATH_128];
+
+// SV_SpawnServer calls this before it loads the world model of the next map (listen server and single player)
+void Mod_FreeBeforeSpawn(const char *newworldname)
+{
+	qbool samemap = !strcmp(mod_freeearly_lastworldname, newworldname);
+
+	if (cls.state != ca_dedicated && mod_freebeforeload.integer > 0 && !samemap) {
+		int i, nummodels = (int)Mem_ExpandableArray_IndexRange(&models);
+		model_t *mod, *oldworld = NULL;
+
+		// the local client must not touch the old level any more (SV_SpawnServer does the same a few lines later)
+		cls.signon = SIGNON_ZERO;
+		cl.worldmodel = NULL;
+		r_refdef.scene.worldmodel = NULL;
+		if (cl.entities)
+			cl.entities[0].render.model = NULL;
+
+		if (mod_freebeforeload.integer >= 2)
+			Mod_FreeEarly(MOD_FREEEARLY_ALL, NULL);
+		else if (mod_freeearly_lastworldname[0]) {
+			for (i = 0;i < nummodels;i++)
+				if ((mod = (model_t*) Mem_ExpandableArray_RecordAtIndex(&models, i)) && mod->mempool && !mod->brush.parentmodel && !strcmp(mod->model_name, mod_freeearly_lastworldname))
+					oldworld = mod;
+			if (oldworld)
+				Mod_FreeEarly(MOD_FREEEARLY_WORLD, oldworld);
+		}
+	}
+	c_strlcpy (mod_freeearly_lastworldname, newworldname);
+}
+
+// CL_ParseServerInfo calls this when it knows which models the next map uses (they are marked used) and has not
+// loaded any of them yet: a client of a remote server, or demo playback
+void Mod_FreeBeforeClientLoad(void)
+{
+	if (mod_freebeforeload.integer > 0)
+		Mod_FreeEarly(MOD_FREEEARLY_UNUSED, NULL);
 }
 
 void Mod_PurgeALL(void)
@@ -4655,6 +4764,7 @@ void Mod_InitOnce (void)
 
 	Cvar_RegisterVariable(&r_mipskins);
 	Cvar_RegisterVariable(&r_mipnormalmaps);
+	Cvar_RegisterVariable(&mod_freebeforeload);
 	Cvar_RegisterVariable(&mod_generatelightmaps_unitspersample);
 	Cvar_RegisterVariable(&mod_generatelightmaps_borderpixels);
 	Cvar_RegisterVariable(&mod_generatelightmaps_texturesize);

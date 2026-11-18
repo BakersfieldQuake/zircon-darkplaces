@@ -1786,6 +1786,9 @@ gamedir_change:
 		// we purge the models and sounds later in CL_SignonReply
 		//Mod_PurgeUnused();
 		//S_PurgeUnused();
+		// mod_freebeforeload: except what the new map does not use, when nothing of the new map is loaded yet
+		if (!sv.active)
+			Mod_FreeBeforeClientLoad();
 
 		// clear sound usage flags for purging of unused sounds
 		S_ClearUsed();

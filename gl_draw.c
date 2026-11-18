@@ -954,18 +954,22 @@ static void gl_draw_shutdown(void)
 	memset(cachepichash, 0, sizeof(cachepichash));
 }
 
-static void gl_draw_newmap(void)
+// mark all of the persistent pics so they are not purged...
+void Draw_MarkPersistentPicsUsed(void)
 {
 	int i;
-	font_newmap();
-
-	// mark all of the persistent pics so they are not purged...
 	for (i = 0; i < numcachepics; i++)
 	{
 		cachepic_t *pic = cachepics + i;
 		if (!pic->autoload && pic->skinframe)
 			R_SkinFrame_MarkUsed(pic->skinframe);
 	}
+}
+
+static void gl_draw_newmap(void)
+{
+	font_newmap();
+	Draw_MarkPersistentPicsUsed();
 }
 
 void GL_Draw_Init (void)

@@ -605,6 +605,8 @@ void Mod_UnloadModel (model_t *mod);
 void Mod_ClearUsed(void);
 void Mod_PurgeUnused(void);
 void Mod_PurgeALL(void); // Baker: For gamedir change
+void Mod_FreeBeforeSpawn(const char *newworldname);
+void Mod_FreeBeforeClientLoad(void);
 
 void Mod_RemoveStaleWorldModels(model_t *skip); // only used during loading!
 

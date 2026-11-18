@@ -214,6 +214,7 @@ const char *Draw_GetPicName(cachepic_t *pic);
 int Draw_GetPicWidth(cachepic_t *pic);
 int Draw_GetPicHeight(cachepic_t *pic);
 qbool Draw_IsPicLoaded(cachepic_t *pic);
+void Draw_MarkPersistentPicsUsed(void);
 rtexture_t *Draw_GetPicTexture(cachepic_t *pic);
 
 extern rtexturepool_t *drawtexturepool; // used by ft2.c
