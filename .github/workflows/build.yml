@@ -1,0 +1,81 @@
+name: build
+
+# Build the Zircon engine (BAKOQUAKE fork) for Linux and Windows.
+# Linux job is verified. Windows job is best-effort (MSYS2 MINGW64) and may need
+# dependency tweaks the first time it runs on a real runner.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsdl2-dev zlib1g-dev
+          # jpeg/curl/vorbis/d0_blind_id are dlopen'd at runtime, no -dev needed to build.
+
+      - name: Build client + dedicated server
+        run: |
+          make -f makefile clean || true
+          make -f makefile -j"$(nproc)" DP_LINK_JPEG=dlopen sdl-release sv-release
+
+      - name: Sanity check binaries
+        run: |
+          file zircon_beta_linux_sdl zircon_beta_linux_dedicated_server
+          ldd zircon_beta_linux_sdl | (! grep -i 'not found')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zircon-linux-x86_64
+          path: |
+            zircon_beta_linux_sdl
+            zircon_beta_linux_dedicated_server
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (MINGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libjpeg-turbo
+
+      - name: Build client + dedicated server
+        run: |
+          # WINDIR is set under MSYS2, so the engine makefile auto-selects the mingw
+          # target and produces the .exe names. mingw links jpeg/zlib/SDL2 shared.
+          make -f makefile clean || true
+          make -f makefile -j"$(nproc)" sdl-release sv-release
+
+      - name: List outputs
+        run: ls -la zircon_beta_windows_*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zircon-windows-x86_64
+          path: |
+            zircon_beta_windows_sdl.exe
+            zircon_beta_windows_dedicated_server.exe
+          if-no-files-found: error
+          # Note: the .exe need the runtime DLLs shipped in BAKOQUAKE/engine/bin64
+          # (SDL2.dll, libjpeg, zlib1, libcurl, ...) to actually run.
