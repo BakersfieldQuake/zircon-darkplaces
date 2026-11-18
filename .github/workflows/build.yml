@@ -1,6 +1,6 @@
 name: build
 
-# Build the Zircon engine (BAKOQUAKE fork) for Linux and Windows.
+# Build the Zircon engine for Linux and Windows.
 # Linux job is verified. Windows job is best-effort (MSYS2 MINGW64) and may need
 # dependency tweaks the first time it runs on a real runner.
 
@@ -77,5 +77,5 @@ jobs:
             zircon_beta_windows_sdl.exe
             zircon_beta_windows_dedicated_server.exe
           if-no-files-found: error
-          # Note: the .exe need the runtime DLLs shipped in BAKOQUAKE/engine/bin64
-          # (SDL2.dll, libjpeg, zlib1, libcurl, ...) to actually run.
+          # Note: the .exe need matching runtime DLLs alongside them to actually run
+          # (SDL2.dll, libjpeg, zlib1, libcurl, ...).
