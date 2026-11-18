@@ -1,8 +1,12 @@
 name: build
 
 # Build the Zircon engine for Linux and Windows.
-# Linux job is verified. Windows job is best-effort (MSYS2 MINGW64) and may need
-# dependency tweaks the first time it runs on a real runner.
+#
+# Each job keeps its build-obj/ in the Actions cache so successive runs compile
+# incrementally (warm). If the warm build fails (e.g. a stale object after a flag
+# change), the job bumps a rolling failure counter and retries ONCE from clean with
+# no cache. The warm cache is only (re)saved after a build that actually succeeded,
+# so a bad cache never persists.
 
 on:
   push:
@@ -22,15 +26,56 @@ jobs:
           sudo apt-get install -y build-essential libsdl2-dev zlib1g-dev
           # jpeg/curl/vorbis/d0_blind_id are dlopen'd at runtime, no -dev needed to build.
 
-      - name: Build client + dedicated server
+      - name: Restore warm build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build-obj
+          key: linux-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            linux-buildobj-${{ github.ref_name }}-
+            linux-buildobj-
+
+      - name: Restore failure counter
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci_failcount
+          key: linux-failcount-${{ github.run_id }}
+          restore-keys: linux-failcount-
+
+      - name: Build (warm)
+        id: warm
+        continue-on-error: true
+        run: make -f makefile -j"$(nproc)" DP_LINK_JPEG=dlopen sdl-release sv-release
+
+      - name: Clean retry (no cache)
+        id: retry
+        if: steps.warm.outcome == 'failure'
         run: |
+          n=$(cat .ci_failcount 2>/dev/null || echo 0); echo $((n + 1)) > .ci_failcount
+          echo "::warning::Warm build failed; rolling failure count now $(cat .ci_failcount). Retrying clean."
+          echo "Warm build FAILED — clean retry. Rolling failures: $(cat .ci_failcount)" >> "$GITHUB_STEP_SUMMARY"
           make -f makefile clean || true
+          rm -rf build-obj
           make -f makefile -j"$(nproc)" DP_LINK_JPEG=dlopen sdl-release sv-release
 
       - name: Sanity check binaries
         run: |
           file zircon_beta_linux_sdl zircon_beta_linux_dedicated_server
           ldd zircon_beta_linux_sdl | (! grep -i 'not found')
+
+      - name: Save warm build cache (only after a good build)
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: build-obj
+          key: linux-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save failure counter
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ci_failcount
+          key: linux-failcount-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,15 +105,57 @@ jobs:
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-libjpeg-turbo
 
-      - name: Build client + dedicated server
+      - name: Restore warm build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build-obj
+          key: windows-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            windows-buildobj-${{ github.ref_name }}-
+            windows-buildobj-
+
+      - name: Restore failure counter
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci_failcount
+          key: windows-failcount-${{ github.run_id }}
+          restore-keys: windows-failcount-
+
+      - name: Build (warm)
+        id: warm
+        continue-on-error: true
         run: |
           # WINDIR is set under MSYS2, so the engine makefile auto-selects the mingw
           # target and produces the .exe names. mingw links jpeg/zlib/SDL2 shared.
+          make -f makefile -j"$(nproc)" sdl-release sv-release
+
+      - name: Clean retry (no cache)
+        id: retry
+        if: steps.warm.outcome == 'failure'
+        run: |
+          n=$(cat .ci_failcount 2>/dev/null || echo 0); echo $((n + 1)) > .ci_failcount
+          echo "::warning::Warm build failed; rolling failure count now $(cat .ci_failcount). Retrying clean."
+          echo "Warm build FAILED — clean retry. Rolling failures: $(cat .ci_failcount)" >> "$GITHUB_STEP_SUMMARY"
           make -f makefile clean || true
+          rm -rf build-obj
           make -f makefile -j"$(nproc)" sdl-release sv-release
 
       - name: List outputs
         run: ls -la zircon_beta_windows_*.exe
+
+      - name: Save warm build cache (only after a good build)
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: build-obj
+          key: windows-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save failure counter
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ci_failcount
+          key: windows-failcount-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         with:
