@@ -563,6 +563,10 @@ darkplaces.o: %.o : %.rc
 	$(CHECKLEVEL2)
 	$(WINDRES) -o $@ $<
 
+zircon.o: %.o : %.rc
+	$(CHECKLEVEL2)
+	$(WINDRES) -o $@ $<
+
 nexuiz.o: %.o : %.rc
 	$(CHECKLEVEL2)
 	$(WINDRES) -o $@ $<

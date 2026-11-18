@@ -276,7 +276,7 @@ CFLAGS_WARNINGS=-Wall -Winline -Wno-c++-compat -Wwrite-strings -Wshadow -Wsign-c
 
 
 ifeq ($(DP_MAKE_TARGET), mingw)
-	OBJ_ICON=darkplaces.o
+	OBJ_ICON=zircon.o
 	OBJ_ICON_NEXUIZ=nexuiz.o
 
 	LDFLAGS_SV=$(LDFLAGS_WINSV)
