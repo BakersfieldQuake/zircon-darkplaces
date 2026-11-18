@@ -1,0 +1,441 @@
+// csg_p_map_rotate.c.h
+
+// Structure holding the precalculated linear form rotation data
+typedef struct {
+    vec3_t origin;   // Pivot point
+    int quadrant;    // 0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°
+    float cx;        // Precalculated constant offset for X equation
+    float cy;        // Precalculated constant offset for Y equation
+} rotation_90_t;
+
+/**
+ * Initializes the rotation struct from a pivot center and yaw degrees,
+ * precalculating the linear equation constants for fast execution.
+ */
+void InitRotation90(const vec3_t center, int yaw_degrees, rotation_90_t *out_rot) {
+    // 1. Use the true centroid / center directly as the pivot origin
+    VectorCopy(center, out_rot->origin);
+
+    // 2. Normalize yaw to a 0-3 quadrant index, handling negative angles safely
+    int q = (yaw_degrees / 90) % 4;
+    if (q < 0) {
+        q += 4;
+    }
+    out_rot->quadrant = q;
+
+    float ox = out_rot->origin[0];
+    float oy = out_rot->origin[1];
+
+    // 3. Precalculate linear constants (c_x and c_y) based on x = (a)y + b form
+    switch (q) {
+        case 0: // 0°: x = x, y = y
+            out_rot->cx = 0.0f;
+            out_rot->cy = 0.0f;
+            break;
+        case 1: // 90°: x = -y + (ox + oy), y = x + (oy - ox)
+            out_rot->cx = ox + oy;
+            out_rot->cy = oy - ox;
+            break;
+        case 2: // 180°: x = -x + 2*ox, y = -y + 2*oy
+            out_rot->cx = 2.0f * ox;
+            out_rot->cy = 2.0f * oy;
+            break;
+        case 3: // 270°: x = y + (ox - oy), y = -x + (ox + oy)
+            out_rot->cx = ox - oy;
+            out_rot->cy = ox + oy;
+            break;
+    }
+}
+
+/**
+ * Rotates a point using the precalculated linear form constants.
+ */
+void RotatePoint90Z(const vec3_t in_point, const rotation_90_t *rot, vec3_t out_point) {
+    float x = in_point[0];
+    float y = in_point[1];
+
+    switch (rot->quadrant) {
+        case 0: // 0°
+            out_point[0] = x;
+            out_point[1] = y;
+            break;
+        case 1: // 90°
+            out_point[0] = -y + rot->cx;
+            out_point[1] =  x + rot->cy;
+            break;
+        case 2: // 180°
+            out_point[0] = -x + rot->cx;
+            out_point[1] = -y + rot->cy;
+            break;
+        case 3: // 270°
+            out_point[0] =  y + rot->cx;
+            out_point[1] = -x + rot->cy;
+            break;
+    }
+
+    // Z height remains unchanged for yaw rotation
+    out_point[2] = in_point[2];
+}
+RELATED_ (x = map_move_epairs_origin)
+
+// Helper to multiply a 3x3 rotation matrix by a 3D vector
+CALLERS_ (brushface_process_translate_rotate2)
+void RotateVector(const float matrix[3][3], const vec3_t in, vec3_t out)
+{
+    out[0] = in[0] * matrix[0][0] + in[1] * matrix[0][1] + in[2] * matrix[0][2];
+    out[1] = in[0] * matrix[1][0] + in[1] * matrix[1][1] + in[2] * matrix[1][2];
+    out[2] = in[0] * matrix[2][0] + in[1] * matrix[2][1] + in[2] * matrix[2][2];
+}
+
+// Helper to build a rotation matrix from Euler angles (pitch, yaw, roll) using DEG2RAD
+CALLERS_ (brushface_process_translate_rotate2)
+void CreateRotationMatrix(float pitch, float yaw, float roll, float matrix[3][3])
+{
+    float sp = sin(DEG2RAD(pitch));
+    float cp = cos(DEG2RAD(pitch));
+    float sy = sin(DEG2RAD(yaw));
+    float cy = cos(DEG2RAD(yaw));
+    float sr = sin(DEG2RAD(roll));
+    float cr = cos(DEG2RAD(roll));
+
+    matrix[0][0] = cy * cp;
+    matrix[0][1] = cy * sp * sr - sy * cr;
+    matrix[0][2] = cy * sp * cr + sy * sr;
+
+    matrix[1][0] = sy * cp;
+    matrix[1][1] = sy * sp * sr + cy * cr;
+    matrix[1][2] = sy * sp * cr - cp * sr;
+
+    matrix[2][0] = -sp;
+    matrix[2][1] = cp * sr;
+    matrix[2][2] = cp * cr;
+}
+
+
+void brushface_process_translate_rotate2(
+    const vec3_t translate,
+    const rotation_90_t *rot,
+    vec3_t br_p1,
+    vec3_t br_p2,
+    vec3_t br_p3,
+    const char *texturename,
+    vec4_t tex_s,
+    vec4_t tex_t,
+    double *p_rotation,
+    double *p_scale_s,
+    double *p_scale_t,
+    float texture_width,
+    float texture_height
+)
+{
+    // 1. Transform physical plane points.
+	vec3_t temp_p = {0};
+
+    RotatePoint90Z(br_p1, rot, temp_p);
+    VectorAdd(temp_p, translate, br_p1);
+
+    RotatePoint90Z(br_p2, rot, temp_p);
+    VectorAdd(temp_p, translate, br_p2);
+
+    RotatePoint90Z(br_p3, rot, temp_p);
+    VectorAdd(temp_p, translate, br_p3);
+
+    // 2. Save original texture axes and shifts.
+    vec3_t old_s = { tex_s[0], tex_s[1], tex_s[2] };
+    vec3_t old_t = { tex_t[0], tex_t[1], tex_t[2] };
+
+    float old_shift_s = tex_s[3];
+    float old_shift_t = tex_t[3];
+
+    // 3. Rotate texture axes.
+    switch (rot->quadrant) {
+        case 0:
+            break;
+
+        case 1: // 90 degrees
+            tex_s[0] = -old_s[1];
+            tex_s[1] =  old_s[0];
+
+            tex_t[0] = -old_t[1];
+            tex_t[1] =  old_t[0];
+            break;
+
+        case 2: // 180 degrees
+            tex_s[0] = -old_s[0];
+            tex_s[1] = -old_s[1];
+
+            tex_t[0] = -old_t[0];
+            tex_t[1] = -old_t[1];
+            break;
+
+        case 3: // 270 degrees
+            tex_s[0] =  old_s[1];
+            tex_s[1] = -old_s[0];
+
+            tex_t[0] =  old_t[1];
+            tex_t[1] = -old_t[0];
+            break;
+    }
+
+    // 4. Calculate total transformation translation.
+    vec3_t delta = {
+        rot->cx + translate[0],
+        rot->cy + translate[1],
+        translate[2]
+    };
+
+    // 5. Apply Hammer's texture-lock offset calculation.
+    float scale_s = p_scale_s ? (float)*p_scale_s : 1.0f;
+    float scale_t = p_scale_t ? (float)*p_scale_t : 1.0f;
+
+    if (scale_s != 0.0f)
+        tex_s[3] = old_shift_s - DotProduct(delta, tex_s) / scale_s;
+
+    if (scale_t != 0.0f)
+        tex_t[3] = old_shift_t - DotProduct(delta, tex_t) / scale_t;
+
+    // 6. Normalize texture offsets using texture dimensions.
+    if (texture_width > 0.0f)
+        tex_s[3] = fmod(tex_s[3], texture_width);
+
+    if (texture_height > 0.0f)
+        tex_t[3] = fmod(tex_t[3], texture_height);
+
+    // 7. Rotation is represented by the rotated texture axes.
+    if (p_rotation)
+        *p_rotation = 0.0;
+}
+
+
+CALLERS_ (map_brushes_translate_rotate SCR_brushmoverotate_f)
+static void brushface_process_translate_rotate (map_t *hm, brushrow_s *d_face, const vec3_t translate, const rotation_90_t *rot)
+{
+	int texture_width = not_found_neg1, texture_height = not_found_neg1;
+	map_texture_find_size (hm, d_face->pbrtexture, &texture_width, &texture_height);
+	brushface_process_translate_rotate2 (translate, rot,
+		d_face->a,
+		d_face->b,
+		d_face->c,
+		d_face->pbrtexture,
+		d_face->tex_axis_s,
+		d_face->tex_axis_t,
+		&d_face->faceparms[FT_ROTATION_0],
+		&d_face->faceparms[FT_USCALE_1],
+		&d_face->faceparms[FT_VSCALE_2],
+		texture_width,
+		texture_height
+	);
+}
+
+void map_rotate_brush (map_t *hm, int entnum, int brushnum, const vec3_t move, const vec3_t rotate)
+{
+    BRUSH_DEFINE (brush, hm, entnum, brushnum);
+
+    int yaw_degrees = (int)rotate[1];
+    rotation_90_t rot;
+    // Pass brush->bxcenter directly as the unified pivot
+    InitRotation90(brush->bxcenter, yaw_degrees, &rot);
+
+    vec3_t rotated_origin;
+    RotatePoint90Z(rot.origin, &rot, rotated_origin);
+
+    vec3_t eff_translate;
+    eff_translate[0] = move[0] + rot.origin[0] - rotated_origin[0];
+    eff_translate[1] = move[1] + rot.origin[1] - rotated_origin[1];
+    eff_translate[2] = move[2] + rot.origin[2] - rotated_origin[2];
+
+    for_each_brush_face_2 (facenum, face, hm, entnum, brushnum)
+        brushface_process_translate_rotate (hm, face, eff_translate, &rot);
+    for_each_end
+}
+
+RELATED_ (brush_or_patch_tranlate_patch_translate)
+RELATED_ (csgc_rotateunit)
+
+void map_rotate_patch (map_t *hm, int entnum, int brushnum, const vec3_t move_amount, float degrees)
+{
+	BRUSH_DEFINE (brush, hm, entnum, brushnum);
+	RELATED_  (patchrow_s)
+
+	float radians = DEG2RAD(degrees);
+	float cs = cos(radians);
+	float sn = sin(radians);
+
+	vec3_t center;
+	VectorCenter (brush->bxmins, brush->bxmaxs, center);
+
+	// PATCH - Rotate all control points
+	for_each_patch_row (rownum, brush, d_patchrow)
+		for_each_patch_column (columnnum, brush, d_patchrow)
+			float *p = &d_patchrow->flots[columnnum * 5];
+
+			float x = p[0] - center[0];
+			float y = p[1] - center[1];
+
+			p[0] = center[0] + x * cs - y * sn;
+			p[1] = center[1] + x * sn + y * cs;
+
+		for_each_end // col
+	for_each_end // patchrow
+
+	// PATCH - Translate all control points
+	for_each_patch_row (rownum, brush, d_patchrow)
+		for_each_patch_column (columnnum, brush, d_patchrow)
+			float *p = &d_patchrow->flots[columnnum * 5];
+			VectorAdd (move_amount, p, p);
+		for_each_end // col
+	for_each_end // patchrow
+}
+
+// Supports 90, 180, 270 rotation only
+void map_rotate_patch_no_trigonometry (map_t *hm, int entnum, int brushnum, const vec3_t move_amount, float degrees)
+{
+    BRUSH_DEFINE (brush, hm, entnum, brushnum);
+    RELATED_  (patchrow_s)
+
+    int quadrant = ((int)degrees / 90) % 4;
+
+    vec3_t center;
+    VectorCenter (brush->bxmins, brush->bxmaxs, center);
+
+	//int unit256 = ((int)hm & 256 );
+	//zpr ("Moving patch unit = %d ent %d brush %d " V3G, unit256, entnum, brushnum, VS(move_amount));
+
+    // PATCH - Rotate all control points
+    for_each_patch_row (rownum, brush, d_patchrow)
+        for_each_patch_column (columnnum, brush, d_patchrow)
+            float *p = &d_patchrow->flots[columnnum * 5];
+
+            float x = p[0] - center[0];
+            float y = p[1] - center[1];
+
+            switch (quadrant)
+            {
+                case 1: // 90 degrees
+                    p[0] = center[0] - y;
+                    p[1] = center[1] + x;
+                    break;
+
+                case 2: // 180 degrees
+                    p[0] = center[0] - x;
+                    p[1] = center[1] - y;
+                    break;
+
+                case 3: // 270 degrees
+                    p[0] = center[0] + y;
+                    p[1] = center[1] - x;
+                    break;
+            }
+
+        for_each_end // col
+    for_each_end // patchrow
+
+    // PATCH - Translate all control points
+    for_each_patch_row (rownum, brush, d_patchrow)
+        for_each_patch_column (columnnum, brush, d_patchrow)
+            float *p = &d_patchrow->flots[columnnum * 5];
+            VectorAdd (move_amount, p, p);
+        for_each_end // col
+    for_each_end // patchrow
+}
+
+void map_rotate_entity (map_t *hm, int entnum, const vec3_t move, const vec3_t rotate,
+    const rotation_90_t *map_rot)
+{
+    //ENT_DEFINE (ent, hm, entnum);
+
+    vec3_t ent_mins = {  999999.0f,  999999.0f,  999999.0f };
+    vec3_t ent_maxs = { -999999.0f, -999999.0f, -999999.0f };
+
+    for_each_brush_or_patch_2 (brushnum, brush, hm, entnum)
+        for (int i = 0; i < 3; i++) {
+            if (brush->bxmins[i] < ent_mins[i]) ent_mins[i] = brush->bxmins[i];
+            if (brush->bxmaxs[i] > ent_maxs[i]) ent_maxs[i] = brush->bxmaxs[i];
+        }
+    for_each_end
+
+    // Calculate entity centroid center point
+    vec3_t ent_center;
+    ent_center[0] = (ent_mins[0] + ent_maxs[0]) * 0.5f;
+    ent_center[1] = (ent_mins[1] + ent_maxs[1]) * 0.5f;
+    ent_center[2] = (ent_mins[2] + ent_maxs[2]) * 0.5f;
+
+    int yaw_degrees = (int)rotate[1];
+    rotation_90_t ent_rot;
+    InitRotation90(ent_center, yaw_degrees, &ent_rot);
+
+	// ORIGIN
+	while (1) {
+		vec3_t origin;
+		if (!map_get_vec3 (hm, entnum, "origin", origin))
+			break;
+
+		vec3_t rotated_origin;
+
+		if (map_rot != NULL) {
+			RotatePoint90Z(origin, map_rot, rotated_origin);
+		} else {
+			RotatePoint90Z(origin, &ent_rot, rotated_origin);
+		}
+
+		// REWRITE - NEW ORIGIN
+		map_set_vec3_lossless (hm, entnum, "origin", rotated_origin);
+
+		break;
+	} // while 1
+
+	// AFTER ORIGIN
+
+    for_each_brush_or_patch_2 (brushnum, brush, hm, entnum)
+        vec3_t rotated_brush_center = {0};
+        vec3_t brush_move;
+
+        if (map_rot) {
+            // Map-level orbit around the map centroid.
+            RotatePoint90Z(brush->bxcenter, map_rot, rotated_brush_center);
+        } else {
+            // Entity-level orbit around the entity centroid.
+            RotatePoint90Z(brush->bxcenter, &ent_rot, rotated_brush_center);
+        }
+
+        brush_move[0] = move[0] + rotated_brush_center[0] - brush->bxcenter[0];
+        brush_move[1] = move[1] + rotated_brush_center[1] - brush->bxcenter[1];
+        brush_move[2] = move[2] + rotated_brush_center[2] - brush->bxcenter[2];
+
+        if (brush->is_a_patch) {
+            map_rotate_patch_no_trigonometry (hm, entnum, brushnum, brush_move, rotate[1]);
+        } else {
+            map_rotate_brush (hm, entnum, brushnum, brush_move, rotate);
+        }
+    for_each_end
+}
+
+void map_rotate_map (map_t *hm, const vec3_t move, const vec3_t rotate)
+{
+    vec3_t map_mins = {  999999.0f,  999999.0f,  999999.0f };
+    vec3_t map_maxs = { -999999.0f, -999999.0f, -999999.0f };
+
+    for_each_entity_2 (entnum, ent, hm)
+        for_each_brush_or_patch_2 (brushnum, brush, hm, entnum)
+            for (int i = 0; i < 3; i++) {
+                if (brush->bxmins[i] < map_mins[i]) map_mins[i] = brush->bxmins[i];
+                if (brush->bxmaxs[i] > map_maxs[i]) map_maxs[i] = brush->bxmaxs[i];
+            }
+        for_each_end
+    for_each_end
+
+    // Calculate map centroid center point
+    vec3_t map_center;
+    map_center[0] = (map_mins[0] + map_maxs[0]) * 0.5f;
+    map_center[1] = (map_mins[1] + map_maxs[1]) * 0.5f;
+    map_center[2] = (map_mins[2] + map_maxs[2]) * 0.5f;
+
+    int yaw_degrees = (int)rotate[1];
+    rotation_90_t map_rot;
+    InitRotation90(map_center, yaw_degrees, &map_rot);
+
+    for_each_entity_2 (entnum, ent, hm)
+        map_rotate_entity (hm, entnum, move, rotate, &map_rot);
+    for_each_end
+}
+

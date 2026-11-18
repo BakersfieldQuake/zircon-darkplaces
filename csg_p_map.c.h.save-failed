@@ -1,0 +1,1213 @@
+// csg_p_map.c.h
+
+
+
+RELATED_ (map_metric_entity_sub) // We call this
+
+// Returns false if entity has no brushes.
+CALLERS_ (entitylist_perform_layout_from_boxes)
+
+RELATED_ (map_metric_entity_sub)
+void face_plane_t_calc(brushrow_s *d_face)
+{
+    vec3_t v1, v2;
+
+    VectorSubtract(d_face->b, d_face->a, v1);
+    VectorSubtract(d_face->c, d_face->a, v2);
+
+    CrossProduct(v1, v2, d_face->face_plane.normal);
+	//CrossProduct(v2, v1, d_face->face_plane.normal); // Seems to be the winding we need
+    VectorNormalize(d_face->face_plane.normal);
+
+    d_face->face_plane.dist = DotProduct(d_face->a, d_face->face_plane.normal);
+}
+
+void map_metric_brush(map_t *hm, int entnum, int brushnum)
+{
+	ENT_DEFINE (d_ent, hm, entnum);
+	if (!d_ent->brushlist.count) {
+#ifdef _DEBUG
+		int j = 5; // Baker: This is an error because you don't call this with no brushes really.
+#endif // _DEBUG
+		return;
+	}
+
+	BRUSH_DEFINE (d_brush, hm, entnum, brushnum);
+
+	Vector3DeclareSet (bbemins,  999999,   999999,   999999);
+	Vector3DeclareSet (bbemaxs, -999999,  -999999,  -999999);
+
+	// REAL BRUSH
+	for_each_brush_face (facenum, d_brush, d_face)
+		// FIGURING BBOX OF ACTUAL FACE
+		VectorSet (d_face->bfmins,  999999,   999999,   999999);
+		VectorSet (d_face->bfmaxs, -999999,  -999999,  -999999);
+
+		bounds_expand	(d_face->a, d_face->bfmins, d_face->bfmaxs);
+		bounds_expand	(d_face->b, d_face->bfmins, d_face->bfmaxs);
+		bounds_expand	(d_face->c, d_face->bfmins, d_face->bfmaxs);
+
+		// FINALIZE FACE DIMENSIONS
+		VectorSubtract	(d_face->bfmaxs, d_face->bfmins, d_face->bfdims);
+
+		// EXPANDING BRUSH METRIX
+		bounds_expand	(d_face->bfmins, d_brush->bxmins, d_brush->bxmaxs);
+		bounds_expand	(d_face->bfmaxs, d_brush->bxmins, d_brush->bxmaxs);
+
+		face_plane_t_calc (d_face);
+	for_each_end // brush row
+
+	// FINALIZE BRUSH DIMENSIONS
+	VectorSubtract	(d_brush->bxmaxs, d_brush->bxmins, d_brush->bxdims);
+	VectorCenter	(d_brush->bxmaxs, d_brush->bxmins, d_brush->bxcenter);
+
+//	// EXPANDING ENTITY METRIC
+//	bounds_expand	(d_brush->bxmins, bbemins, bbemaxs); // Yes, bbemaxs is what expands
+//	bounds_expand	(d_brush->bxmaxs, bbemins, bbemaxs);
+}
+
+RELATED_ (map_move)
+qbool map_metric_entity_sub (entityx_s *d_ent) // EVEN WORLD COMES HERE
+{
+	// Baker: September 2 2026 - Weakness: non-func_group entities.  Those technically shouldn't count.
+	// Baker: September 13 2026 - I think that is correct.
+	if (!d_ent->brushlist.count)
+		return false;
+
+	qbool did_find_any_brushes = false;
+
+	vec3_t bbemins, bbemaxs;
+	VectorSet (bbemins,  999999,   999999,   999999);
+	VectorSet (bbemaxs, -999999,  -999999,  -999999);
+
+	for_each_brush_undeleted (brushnum, d_ent, d_brush)
+		if (d_brush->is_a_patch) {
+			// PATCH - Translate all vertexes
+			if (d_brush->patchrowlist.count && did_find_any_brushes == false)
+				did_find_any_brushes = true;
+
+			VectorSet (d_brush->bxmins,  999999,   999999,   999999);
+			VectorSet (d_brush->bxmaxs, -999999,  -999999,  -999999);
+
+			for_each_patch_row (rownum, d_brush, d_patchrow)
+				// FIGURING BBOX OF PATCH
+				VectorSet (d_patchrow->bpmins,  999999,   999999,   999999);
+				VectorSet (d_patchrow->bpmaxs, -999999,  -999999,  -999999);
+
+				for_each_patch_column (columnnum, d_brush, d_patchrow)
+					float *pvec = &d_patchrow->flots[columnnum * 5 + 0];
+					//VectorAdd (vadd, pvec, pvec); // Translate
+					//bounds_expand	(pvec, d_patchrow->bpmins, d_patchrow->bpmaxs);
+					//bounds_expand	(pvec, d_patchrow->bpmins, d_patchrow->bpmaxs);
+					bounds_expand	(pvec, d_patchrow->bpmins, d_patchrow->bpmaxs);
+
+					// FINALIZE FACE DIMENSIONS
+					VectorSubtract	(d_patchrow->bpmaxs, d_patchrow->bpmins, d_patchrow->bpdims);
+					//VectorCenter	(d_patchrow->bpmins, d_patchrow->bpmaxs, d_patchrow->bpcenter);
+
+					// EXPANDING BRUSH METRIX
+					bounds_expand	(d_patchrow->bpmins, d_brush->bxmins, d_brush->bxmaxs);
+					bounds_expand	(d_patchrow->bpmaxs, d_brush->bxmins, d_brush->bxmaxs);
+				for_each_end // patch_column
+			for_each_end // patch_row
+
+			// FINALIZE PATCH DIMENSIONS
+			VectorSubtract		(d_brush->bxmaxs, d_brush->bxmins, d_brush->bxdims);
+
+			// EXPANDING ENTITY METRIC
+			bounds_expand	(d_brush->bxmins, bbemins, bbemaxs); // Yes, bbemaxs is what expands
+			bounds_expand	(d_brush->bxmaxs, bbemins, bbemaxs);
+
+			continue; // WE ARE DONE WITH THIS PATCH
+		} // IF PATCH
+
+		if (d_brush->brushrowlist.count && did_find_any_brushes == false)
+			did_find_any_brushes = true;
+
+		VectorSet (d_brush->bxmins,  999999,   999999,   999999);
+		VectorSet (d_brush->bxmaxs, -999999,  -999999,  -999999);
+
+		// REAL BRUSH
+		for_each_brush_face (facenum, d_brush, d_face)
+			// FIGURING BBOX OF ACTUAL FACE
+			VectorSet (d_face->bfmins,  999999,   999999,   999999);
+			VectorSet (d_face->bfmaxs, -999999,  -999999,  -999999);
+
+			bounds_expand	(d_face->a, d_face->bfmins, d_face->bfmaxs);
+			bounds_expand	(d_face->b, d_face->bfmins, d_face->bfmaxs);
+			bounds_expand	(d_face->c, d_face->bfmins, d_face->bfmaxs);
+
+			// FINALIZE FACE DIMENSIONS
+			VectorSubtract	(d_face->bfmaxs, d_face->bfmins, d_face->bfdims);
+
+			// EXPANDING BRUSH METRIX
+			bounds_expand	(d_face->bfmins, d_brush->bxmins, d_brush->bxmaxs);
+			bounds_expand	(d_face->bfmaxs, d_brush->bxmins, d_brush->bxmaxs);
+
+			face_plane_t_calc (d_face);
+		for_each_end // brush row
+
+		// FINALIZE BRUSH DIMENSIONS
+		VectorSubtract	(d_brush->bxmaxs, d_brush->bxmins, d_brush->bxdims);
+		VectorCenter	(d_brush->bxmaxs, d_brush->bxmins, d_brush->bxcenter);
+
+		// EXPANDING ENTITY METRIC
+		bounds_expand	(d_brush->bxmins, bbemins, bbemaxs); // Yes, bbemaxs is what expands
+		bounds_expand	(d_brush->bxmaxs, bbemins, bbemaxs);
+	for_each_end // brush
+
+patch_skip:
+	// ADD A ORIGIN BRUSH from MINS/MAXS BBOX
+	// Baker: September 11 2026 - We are not adjusting entity metrics for the patch only entities.
+	if (did_find_any_brushes) {
+		// Remember, a patch only entity like a func_wall is possible
+		// And we don't know how to metric that yet.
+		VectorCopyDestSrc	(d_ent->bemins, bbemins);
+		VectorCopyDestSrc	(d_ent->bemaxs, bbemaxs);
+		VectorSubtract		(d_ent->bemaxs, d_ent->bemins, d_ent->bedims);
+		VectorCenter		(d_ent->bemaxs, d_ent->bemins, d_ent->becenter);
+		d_ent->has_brushes = true;
+	}
+	return did_find_any_brushes;
+}
+
+
+void map_reset_then_remetric (map_t *plist)
+{
+	map_metric_reset (plist);
+	map_metric_all (plist);
+}
+
+// Mark brushes
+CALLERS_ (map_load_from_string then we are called AFTER map_metric_all) // Means we have full metric available.
+void map_metric_cubeoid_mark (map_t *plist)
+{
+	for_each_entity_undeleted (entnnum, plist, d_ent)
+		for_each_brush_not_a_patch (brushnum, d_ent, d_brush)
+#ifdef _DEBUG
+			if (brushnum == 66) {
+				int k = 5;
+			}
+#endif // _DEBUG
+			qbool is_cubeoid = _map_metric_cubeoid_mark_brush_check_sub (d_brush, &plist->num_non_cubeoid_6_facer);
+			if (is_cubeoid) {
+				d_brush->is_cubeoid = true;
+				plist->num_cubeoids ++;
+			}
+		for_each_end // brush
+	for_each_end // for_each_entity  entities that are "func_wall"
+}
+
+CALLERS_ (map_load_from_string) // EXCLUSIVE - WE ARE BOSS
+RELATED_ (map_metric_entity_sub map_metric_reset)
+
+void map_metric_all (map_t *plist) // METRIC CALLS US - MEGA MAJOR
+{
+	int num_processed = 0;
+
+	GET_WORLD_0 (plist, d_world);
+
+	qbool was_processed = map_metric_entity_sub (d_world); // Returns false if no brushes.
+	d_world->is_world_or_func_group = true;
+
+	// We could be dealing with something weird like all func groups.
+	if (was_processed)
+		num_processed ++;
+
+	vec3_t bbemins, bbemaxs;
+	VectorCopyDestSrc (bbemins, d_world->bemins);
+	VectorCopyDestSrc (bbemaxs, d_world->bemaxs);
+
+	qbool did_any_ents = false;
+	for_each_entity_after_world_undeleted (entnum, plist, d_ent)
+	//for_each_world_func_group (entnum, plist, d_ent)
+		ccs *classname = map_get_classname (plist, entnum);
+		if (String_Starts_With_Nullproof(classname, "func_group"))
+			d_ent->is_world_or_func_group = true;
+
+		qbool was_processed2 = map_metric_entity_sub (d_ent);
+		if (!was_processed2)
+			continue;
+
+		// EXPANDING ENTITY METRIC
+		bounds_expand	(d_ent->bemins, bbemins, bbemaxs); // Yes, bbemaxs is what expands
+		bounds_expand	(d_ent->bemaxs, bbemins, bbemaxs);
+
+		did_any_ents = true;
+		num_processed ++;
+	for_each_end // for_each_entity  entities that are "func_wall"
+
+	if (1 /*did_any_ents*/) {
+		// Could be all world and point entities -- no func_group and no walls/doors/etc.
+		VectorCopyDestSrc	(plist->bbentsmins, bbemins);
+		VectorCopyDestSrc	(plist->bbentsmaxs, bbemaxs);
+		VectorSubtract		(plist->bbentsmaxs, plist->bbentsmins, plist->bbentsdims);
+	} // if 1
+}
+
+void map_metric_reset (map_t *plist) // METRIC CALLS US - MEGA MAJOR
+{
+	//const vec3_t vectorzero = {0,0,0};
+
+	//GET_WORLD_0 (plist, p_world);
+
+	VectorClear	(plist->bbentsmins);
+	VectorClear	(plist->bbentsmaxs);
+	VectorClear	(plist->bbentsdims);
+
+	for_each_entity_undeleted (entnnum, plist, d_ent)
+		VectorClear (d_ent->bemins);
+		VectorClear (d_ent->bemaxs);
+		VectorClear (d_ent->bedims);
+		d_ent->has_brushes = false;
+		for_each_brush_not_a_patch (brushnum, d_ent, d_brush)
+			VectorClear (d_brush->bxmins);
+			VectorClear (d_brush->bxmaxs);
+			VectorClear (d_brush->bxdims);
+			VectorClear (d_brush->bxcenter);
+
+			for_each_brush_face (facenum, d_brush, d_face)
+				VectorClear (d_face->bfmins);
+				VectorClear (d_face->bfmaxs);
+				VectorClear (d_face->bfdims);
+			for_each_end // face
+		for_each_end // brush
+	for_each_end // entity
+}
+
+// What's the option thing?  No quadrants
+// plist is always a model.
+
+// Results goes to plist so it is required to be world.
+
+
+
+
+
+
+
+
+// ONLY TRANSLATING THE ORIGIN KEY.
+RELATED_ (map_entity_translate_with_metric map_afterworld_copy)
+void entity_translate_with_metric (entityx_s *d_ent, vec3_t move_amount_add)
+{
+	int num_moved = 0;
+
+#pragma message ("Won't this get weird if there is an origin brush?")
+#pragma message ("Does aafter have a rotating door anywhere?  Yes the trailers.")
+#pragma message ("Those seem ok but what function does it use?")
+
+	// Translate entity brushes.
+	for_each_brush (brushnum, d_ent, d_brush)
+		brush_or_patch_tranlate_was_processed (d_brush, move_amount_add);
+		num_moved ++;
+	for_each_end // for_each_brush
+
+	RELATED_ (map_move_epairs_origin)
+	vec3_t origin;
+	qbool has_origin = entity_get_vec3 (d_ent, "origin", origin);
+
+	// ADJUST ORIGIN KEY IF IT HAS ONE
+	if (has_origin) {
+		VectorAdd (move_amount_add, origin, origin);
+		entity_set_vec3_lossess (d_ent, "origin", origin);
+	}
+
+	map_metric_entity_sub (d_ent);
+}
+
+
+void map_entity_translate_with_metric (map_t *hm, int entnum, vec3_t move_amount_add)
+{
+	entity_translate_with_metric (ITOE(hm, entnum), move_amount_add);
+
+}
+
+CALLERS_ (MazeGen only mid-2025)
+entityx_s *entitylist_add_pasting_this_ent (map_t *plist, const entityx_s *r_ent /*paste source*/) // June 8 2025
+{
+	entityx_s	*copyent = entitylist_add(plist);	// D = DEST
+
+	VectorCopyDestSrc (copyent->bemins, r_ent->bemins);
+	VectorCopyDestSrc (copyent->bemaxs, r_ent->bemaxs);
+	VectorCopyDestSrc (copyent->bedims, r_ent->bedims);
+
+	for_each_key_val_pair (keyidx, r_ent, key, val)
+		stringlistappend (&copyent->pairslist, key); // KEY
+		stringlistappend (&copyent->pairslist, val); // VALUE
+	for_each_end // key val pairs
+
+	for_each_const_brush (brushnum, r_ent, r_brush)					// READ BRUSH FROM SRC
+		brush_s *copybrush = _LIFE_brush_add (&copyent->brushlist); // CREATE BRUSH FOR DEST
+
+		copybrush->is_a_patch = r_brush->is_a_patch;
+
+		VectorCopyDestSrc (copybrush->bxmins, r_brush->bxmins);
+		VectorCopyDestSrc (copybrush->bxmaxs, r_brush->bxmaxs);
+		VectorCopyDestSrc (copybrush->bxdims, r_brush->bxdims);
+
+		if (r_brush->is_a_patch) {
+			// PATCH
+			copybrush->texture = Z_StrDup (r_brush->texture);
+			copybrush->patch_rows = r_brush->patch_rows;
+			copybrush->patch_cols = r_brush->patch_cols;
+			copybrush->other3[0] = r_brush->other3[0];
+			copybrush->other3[1] = r_brush->other3[1];
+			copybrush->other3[2] = r_brush->other3[2];
+
+			for_each_patch_row (rownum, r_brush, r_patchrow)
+				patchrow_s *copypatch = patchrowlist_add (&copybrush->patchrowlist);
+
+				// 5 x number of columns - mem copy all the numbers
+				size_t size_to_copy = sizeof(copypatch->flots); // Should be about 1200 bytes
+				memcpy (copypatch->flots, r_patchrow->flots, size_to_copy);
+			for_each_end // patch_row
+		} else {
+			// REAL BRUSH
+			for_each_const_brush_face (facenum, r_brush, r_face)
+				brushrow_s *copyface = brushface_alloc(&copybrush->brushrowlist);
+
+				memcpy (copyface, r_face, sizeof(*r_face));
+				copyface->pbrtexture = Z_StrDup (r_face->pbrtexture);
+
+				VectorCopyDestSrc (copyface->bfmins, r_face->bfmins);
+				VectorCopyDestSrc (copyface->bfmaxs, r_face->bfmaxs);
+				VectorCopyDestSrc (copyface->bfdims, r_face->bfdims);
+			for_each_end // for_each_brush_face
+		} // if brush
+	for_each_end // for_each_brush
+	return copyent;
+}
+
+// Baker: The entity here is a func_group like "func_group_wall_north".
+// We expect a box.
+// MAZEGEN ALPHA BLENDED BRUSHES
+void entity_add_alpha_brushes (entityx_s *d_ent, vec3_t worldmins, vec3_t worldmaxs, vec3_t worldsize)
+{
+	for (int corner = 0; corner < 8; corner ++) { // Do all 8 corners.
+		qbool xhi = (corner & 1) ? true : false;
+		qbool yhi = (corner & 2) ? true : false;
+		qbool zhi = (corner & 4) ? true : false;
+
+		vec3_t brmins, brmaxs, point3d;
+		point3d[0] = xhi ? d_ent->bemaxs[0] : d_ent->bemins[0];
+		point3d[1] = yhi ? d_ent->bemaxs[1] : d_ent->bemins[1];
+		point3d[2] = zhi ? d_ent->bemaxs[2] : d_ent->bemins[2];
+
+		VectorCopyDestSrc (brmins, point3d);
+		VectorCopyDestSrc (brmaxs, point3d);
+
+		for (int d = 0; d < 3; d ++) {
+			brmins[d] -= 48;
+			brmaxs[d] += 48;
+		} // for
+
+		float f = (point3d[0] - worldmins[0])/worldsize[0];
+		f = bound (0, f, 1);
+		va_super (texturename, 128, "common/alpha_%1.2f", f);
+		String_Edit_Replace (texturename, sizeof(texturename), ".", "_");
+		brush_add_cubeoid_with_texture (d_ent, brmins, brmaxs, texturename);
+		// %1.3f 0
+	}
+
+}
+
+CALLERS_ (csge_keep_percent) // This entity failed a DICE ROLL
+qbool entitylist_remove_odds_entity (map_t *plist, entityx_s *e)
+{
+	// REMOVE!  ROLL FAILED!
+	e->is_considered_deleted = true;
+
+	ccs *s_odds_children_branch_name = entity_get (e, "_odds_children_branch_name");
+
+	if (s_odds_children_branch_name) {
+		for_each_entity_original_count_undeleted_startnum(entnum2, plist, edelete, AFTER_WORLD_1)
+			ccs *odds_branch_name = entity_get (edelete, "_odds_branch_name");
+			if (false == String_Match_Nullproof (odds_branch_name, s_odds_children_branch_name))
+				continue; // NO NAME MATCH - SO NOT A CHILD
+
+			// CHILD OF DELETED ENTITY -- REMOVE IT
+			edelete->is_considered_deleted = true;
+		for_each_end // children of branch
+	} // if branch name
+	return true;
+}
+
+
+// Helper to multiply a 3x3 rotation matrix by a 3D vector
+CALLERS_ (brushface_process_translate_rotate2)
+void RotateVector(const float matrix[3][3], const vec3_t in, vec3_t out)
+{
+    out[0] = in[0] * matrix[0][0] + in[1] * matrix[0][1] + in[2] * matrix[0][2];
+    out[1] = in[0] * matrix[1][0] + in[1] * matrix[1][1] + in[2] * matrix[1][2];
+    out[2] = in[0] * matrix[2][0] + in[1] * matrix[2][1] + in[2] * matrix[2][2];
+}
+
+// Helper to build a rotation matrix from Euler angles (pitch, yaw, roll) using DEG2RAD
+CALLERS_ (brushface_process_translate_rotate2)
+void CreateRotationMatrix(float pitch, float yaw, float roll, float matrix[3][3])
+{
+    float sp = sin(DEG2RAD(pitch));
+    float cp = cos(DEG2RAD(pitch));
+    float sy = sin(DEG2RAD(yaw));
+    float cy = cos(DEG2RAD(yaw));
+    float sr = sin(DEG2RAD(roll));
+    float cr = cos(DEG2RAD(roll));
+
+    matrix[0][0] = cy * cp;
+    matrix[0][1] = cy * sp * sr - sy * cr;
+    matrix[0][2] = cy * sp * cr + sy * sr;
+
+    matrix[1][0] = sy * cp;
+    matrix[1][1] = sy * sp * sr + cy * cr;
+    matrix[1][2] = sy * sp * cr - cp * sr;
+
+    matrix[2][0] = -sp;
+    matrix[2][1] = cp * sr;
+    matrix[2][2] = cp * cr;
+}
+
+
+void brushface_process_translate_rotate2(
+    vec3_t translate,
+    vec3_t rotate,
+    vec3_t br_p1,
+    vec3_t br_p2,
+    vec3_t br_p3,
+    const char *texturename,
+    vec4_t tex_s,
+    vec4_t tex_t,
+    double *p_rotation,
+    double *p_scale_s,
+    double *p_scale_t
+)
+{
+    // 1. Build the 3x3 rotation matrix
+    float rot_matrix[3][3];
+    CreateRotationMatrix(rotate[0], rotate[1], rotate[2], rot_matrix);
+
+    // 2. Transform the physical plane-defining points
+    vec3_t temp_p;
+
+    RotateVector(rot_matrix, br_p1, temp_p);
+    br_p1[0] = temp_p[0] + translate[0]; br_p1[1] = temp_p[1] + translate[1]; br_p1[2] = temp_p[2] + translate[2];
+
+    RotateVector(rot_matrix, br_p2, temp_p);
+    br_p2[0] = temp_p[0] + translate[0]; br_p2[1] = temp_p[1] + translate[1]; br_p2[2] = temp_p[2] + translate[2];
+
+    RotateVector(rot_matrix, br_p3, temp_p);
+    br_p3[0] = temp_p[0] + translate[0]; br_p3[1] = temp_p[1] + translate[1]; br_p3[2] = temp_p[2] + translate[2];
+
+    // 3. Rotate the texture U (tex_s) and V (tex_t) axis direction vectors (XYZ components)
+    vec3_t s_dir = { tex_s[0], tex_s[1], tex_s[2] };
+    vec3_t t_dir = { tex_t[0], tex_t[1], tex_t[2] };
+
+    vec3_t rotated_s, rotated_t;
+    RotateVector(rot_matrix, s_dir, rotated_s);
+    RotateVector(rot_matrix, t_dir, rotated_t);
+
+    tex_s[0] = rotated_s[0];
+    tex_s[1] = rotated_s[1];
+    tex_s[2] = rotated_s[2];
+
+    tex_t[0] = rotated_t[0];
+    tex_t[1] = rotated_t[1];
+    tex_t[2] = rotated_t[2];
+
+    // 4. Update the texture shift offsets (4th element of tex_s and tex_t)
+    // to compensate for translation shifts in locked space
+    tex_s[3] += translate[0] * tex_s[0] + translate[1] * tex_s[1] + translate[2] * tex_s[2];
+    tex_t[3] += translate[0] * t_dir[0] + translate[1] * t_dir[1] + translate[2] * t_dir[2]; // Uses pre-rotated space reference for translation offset
+
+    // 5. Zero out the explicit rotation parameter to mirror J.A.C.K.'s vector-baked style
+    if (p_rotation) {
+        *p_rotation = 0.0;
+    }
+}
+
+static void brushface_process_translate_rotate (brushrow_s *d_face, vec3_t translate, vec3_t rotate)
+{
+	brushface_process_translate_rotate2 (translate, rotate,
+		d_face->a,
+		d_face->b,
+		d_face->c,
+		d_face->pbrtexture,
+		d_face->tex_axis_s,
+		d_face->tex_axis_t,
+		&d_face->faceparms[FT_ROTATION_0],
+		&d_face->faceparms[FT_USCALE_1],
+		&d_face->faceparms[FT_VSCALE_2]
+	);
+}
+
+RELATED_ (x = map_move_epairs_origin)
+void entitylist_brushes_translate_rotate (map_t *plist, const vec3_t move0, const vec3_t rotate0)
+{
+//	int num_done = 0;
+	Vector3DeclareCopy(move, move0);
+	Vector3DeclareCopy(rotate, rotate0);
+	rotate[0] = 360 - rotate[0]; // Inverse pitch
+	for_each_entity_undeleted (entnum, plist, d_ent) // EXAMPLE
+		for_each_brush (brushnum, d_ent, d_brush)
+			// REAL BRUSH
+			for_each_brush_face (facenum, d_brush, d_face)
+				brushface_process_translate_rotate (d_face, move, rotate);
+			for_each_end // each brush face
+		 for_each_end // for_each_brush
+	 for_each_end // for_each_entity
+}
+
+
+
+
+
+
+static int _parsemap_readfaces_facerow (map_reader_s *pread, brushrow_s *read_face)
+{
+#define READMORE if (COM_Parse_Basic(&pread->datasrc) == false) return false /*NOT OK*/
+
+//( 480 704 -260 ) ( 480 672 -260 ) ( 480 704 -132 )
+//				common/caulk [ 0 1 0 0 ] [ 0 0 -1 0 ] -0 1 1 0 160 0
+
+	READMORE;	read_face->a[0] = atof(com_token);			//  480
+	READMORE;	read_face->a[1] = atof(com_token);			//  704
+	READMORE;	read_face->a[2] = atof(com_token);			// -260
+	READMORE;	if (com_token[0] != ')') return false;		// )
+
+	READMORE;	if (com_token[0] != '(') return false;		// (
+	READMORE;	read_face->b[0] = atof(com_token);				//	480
+	READMORE;	read_face->b[1] = atof(com_token);				//	672
+	READMORE;	read_face->b[2] = atof(com_token);				// -260
+	READMORE;	if (com_token[0] != ')') return false;		// )
+
+	READMORE;	if (com_token[0] != '(') return false;		// (
+	READMORE;	read_face->c[0] = atof(com_token);				//	480
+	READMORE;	read_face->c[1] = atof(com_token);				//	704
+	READMORE;	read_face->c[2] = atof(com_token);				// -132
+	READMORE;	if (com_token[0] != ')') return false;		// )
+
+//( 480 704 -260 ) ( 480 672 -260 ) ( 480 704 -132 )
+//				common/caulk [ 0 1 0 0 ] [ 0 0 -1 0 ] -0 1 1 0 160 0
+
+// <x_shift> <y_shift>   ... <rotation> <x_scale> <y_scale> <content_flags> <surface_flags> <value>
+	READMORE;	read_face->pbrtexture = Z_StrDup(com_token); //	common/caulk
+	READMORE;	if (com_token[0] != '[') return false;		// [
+	READMORE;	read_face->tex_axis_s[0] = atof(com_token);			//	0
+	READMORE;	read_face->tex_axis_s[1] = atof(com_token);			//	1
+	READMORE;	read_face->tex_axis_s[2] = atof(com_token);			//	0
+	READMORE;	read_face->tex_axis_s[3] = atof(com_token);			//	0
+	//if (read_face->tex_axis_s[3] < 0) {
+	if (String_Match(com_token, "-0")) {
+#if 0
+		int is_negative_bitty = signbit(read_face->tex_axis_s[3]);
+
+		int is_zero = read_face->tex_axis_s[3] == 0;
+		int is_nega_zero = is_negative_bitty == 1;
+		int is_posi_zero = is_negative_bitty == 0;
+		int j = 5 ;
+#endif
+		read_face->tex_axis_s[3] = 0;
+	}
+	READMORE;	if (com_token[0] != ']') return false;		// ]
+	READMORE;	if (com_token[0] != '[') return false;		// [
+	READMORE;	read_face->tex_axis_t[0] = atof(com_token);			//	0
+	READMORE;	read_face->tex_axis_t[1] = atof(com_token);			//	0
+	READMORE;	read_face->tex_axis_t[2] = atof(com_token);			// -1
+	READMORE;	read_face->tex_axis_t[3] = atof(com_token);			//	0
+	READMORE;	if (com_token[0] != ']') return false;		// ]
+
+//( 32768 -34816 10240 ) ( 32768 -34816 -512 ) ( 32768 34816 10240 ) sky/treefall_nite_sky [ 0 1 0 -0 ]
+//		[ 0 0 -1 -0 ] 0 0.5 0.5 // 3 numbers
+//( 34816 34816 10240 ) ( 34816 34816 -512 ) ( 34816 -34816 10240 ) common/caulk [ 0 1 0 -0 ] [ 0 0 -1 -0 ]
+//		              0 0.5 0.5 0 160 0 // 6 numbers
+
+	READMORE;	read_face->faceparms[0] = atof(com_token);			// -0
+	READMORE;	read_face->faceparms[1] = atof(com_token);			//	1
+	READMORE;	read_face->faceparms[2] = atof(com_token);			//	1
+
+	read_face->trail_count = 3;
+	ccs *rollback;
+
+	rollback = pread->datasrc;
+	READMORE;
+	if (isin2(com_token[0], '(', '}') == false) {
+		read_face->faceparms[3] = atof(com_token);			//	0
+		read_face->trail_count ++; // 3 --> 4
+	} else {
+		pread->datasrc = rollback;
+		return true;
+	}
+
+	rollback = pread->datasrc;
+	READMORE;
+	if (isin2(com_token[0], '(', '}') == false) {
+		read_face->faceparms[4] = atof(com_token);			//	0
+		read_face->trail_count ++; // 3 --> 4
+	} else {
+		pread->datasrc = rollback;
+		return true;
+	}
+
+	rollback = pread->datasrc;
+	READMORE;
+	if (isin2(com_token[0], '(', '}') == false) {
+		read_face->faceparms[5] = atof(com_token);			//	0
+		read_face->trail_count ++; // 3 --> 4
+	} else {
+		pread->datasrc = rollback;
+		return true;
+	}
+
+
+	return true; // SUCCESS!
+}
+
+static int parsemap_readfaces_thru_curly_isok (map_reader_s *pread, brush_s *read_brush)
+{
+	while (1) {
+		// We just read a "("
+
+		brushrow_s	*p_brushrow = brushface_alloc (&read_brush->brushrowlist);
+		pread->p_brushrow = p_brushrow;
+		int is_ok = _parsemap_readfaces_facerow(pread, p_brushrow);
+		if (is_ok == false)
+			return false;
+
+		// READ NEXT -- IT IS EITHER "(" NEW ROW OR "}" END OF DATA
+		if (COM_Parse_Basic(&pread->datasrc) == false || isin2(com_token[0], '(', '}') == false) {
+			Con_PrintLinef ("Expected ) or { got " QUOTED_S " in fn %s", com_token, __func__ );
+			return false;
+		}
+
+		if (com_token[0] == '}') {
+			// NORMAL END OF BRUSH
+			pread->depth --;
+			// DEPTH should be 1 now
+			return true; // SUCCESS!
+		}
+
+		// We read a "(" loop back around and add a new row
+	}
+
+	// Unreachable!
+	return false;
+}
+
+		//patchDef2
+		//{ <---------------------------------- START
+		//	sg_tomb/wall019
+		//	( 3 3 0 0 0 )
+		//	(
+		//		( ( -749.894287 6939.077148 3254.350586 0.000000 0.561562 ) ( -678.014404 6939.077148 3254.350586 0.000000 0.280781 ) ( -606.134460 6939.077148 3254.350586 0.000000 0.000000 ) )
+		//		( ( -749.894287 6942.136719 3314.468750 0.235141 0.561562 ) ( -678.014404 6942.136719 3314.468750 0.235141 0.280781 ) ( -606.134460 6942.136719 3314.468750 0.235141 0.000000 ) )
+		//		( ( -749.894287 7006.000000 3325.045410 0.488005 0.561562 ) ( -678.014404 7006.000000 3325.045410 0.488005 0.280781 ) ( -606.134460 7006.000000 3325.045410 0.488005 0.000000 ) )
+		//	)
+		//}
+static int _parsemap_readfaces_patchblock_isok (map_reader_s *pread, brush_s *read_brush)
+{
+	// We just read a "patchDef2"
+		//{ <---------------------------------- START
+		//	sg_tomb/wall019
+		//	( 3 3 0 0 0 )
+		//	(
+		//		( ( -749.894287 6939.077148 3254.350586 0.000000 0.561562 ) ( -678.014404 6939.077148 3254.350586 0.000000 0.280781 ) ( -606.134460 6939.077148 3254.350586 0.000000 0.000000 ) )
+		//		( ( -749.894287 6942.136719 3314.468750 0.235141 0.561562 ) ( -678.014404 6942.136719 3314.468750 0.235141 0.280781 ) ( -606.134460 6942.136719 3314.468750 0.235141 0.000000 ) )
+		//		( ( -749.894287 7006.000000 3325.045410 0.488005 0.561562 ) ( -678.014404 7006.000000 3325.045410 0.488005 0.280781 ) ( -606.134460 7006.000000 3325.045410 0.488005 0.000000 ) )
+		//	)
+		//}
+	READMORE; if (com_token[0] != '{') return false;
+	READMORE; read_brush->texture = Z_StrDup (com_token);
+	READMORE; if (com_token[0] != '(') return false;
+	READMORE; read_brush->patch_rows = atof(com_token); // ( 3 3 0 0 0 )   3 is rows
+	READMORE; read_brush->patch_cols = atof(com_token); //     3				is columns
+	READMORE; read_brush->other3[0] = atof(com_token);
+	READMORE; read_brush->other3[1] = atof(com_token);
+	READMORE; read_brush->other3[2] = atof(com_token);
+	READMORE; if (com_token[0] != ')') return false;
+	READMORE; if (com_token[0] != '(') return false;
+
+	// We read a series of rows
+	// Read the closing )
+	// Read the closing } and decrease depth
+
+	// WE ARE ON A ROW
+
+	for (int row = 0; row < read_brush->patch_rows; row ++) {
+		patchrow_s *p_row = patchrowlist_add (&read_brush->patchrowlist);
+		READMORE; if (com_token[0] != '(') return false;
+		for (int col = 0; col < read_brush->patch_cols; col ++) {
+			READMORE; if (com_token[0] != '(') return false;
+			// Read 5 numbers
+			READMORE; p_row->flots[col * 5 + 0] = atof(com_token);
+			READMORE; p_row->flots[col * 5 + 1] = atof(com_token);
+			READMORE; p_row->flots[col * 5 + 2] = atof(com_token);
+			READMORE; p_row->flots[col * 5 + 3] = atof(com_token);
+			READMORE; p_row->flots[col * 5 + 4] = atof(com_token);
+			READMORE; if (com_token[0] != ')') return false;
+		}
+		READMORE; if (com_token[0] != ')') return false;
+	}
+
+	READMORE; if (com_token[0] != ')') return false;
+	READMORE; if (com_token[0] != '}') return false;
+	READMORE; if (com_token[0] != '}') return false;
+	pread->depth --;
+	return true;
+}
+
+
+qbool map_save_as (map_t *hm, ccs *filename)
+{
+	baker_string_s *bsa = map_save_to_string_bsalloc (hm);
+	qbool isok = FS_WriteFileQuick (filename, bsa->string, bsa->length);
+
+	BakerString_Destroy_And_Null_It (&bsa); // July 29 2025 - This was missing, fool!
+
+	return isok;
+}
+
+qbool entitylist_parse_mapfile_is_ok (map_t *plist, ccs *filename)
+{
+	char *maptext_za = FS_LoadFileQuick (filename);
+	if (!maptext_za)
+		return false;
+
+	int isok = map_load_from_string (plist, maptext_za);
+
+failed:
+	Mem_FreeNull_ (maptext_za);
+	return isok;
+}
+
+CALLERS_ (VM_map_load)
+int entitylist_parse_mapfile_errorcode (map_t *plist, ccs *filename)
+{
+	char *maptext_za = FS_LoadFileQuick (filename);
+	if (!maptext_za)
+		return not_found_neg1; // File not found
+
+	int isok = map_load_from_string (plist, maptext_za);
+
+	int ret = SUCCESS_OK_0;
+	if (!isok)
+		ret = -3; // Opened, couldn't parse the data.
+
+	Mem_FreeNull_ (maptext_za);
+	return ret;
+}
+
+int map_load (map_t *plist, ccs *filename)
+{
+	char *maptext_za = FS_LoadFileQuick (filename);
+	if (!maptext_za)
+		return not_found_neg1; // File not found
+
+	int isok = map_load_from_string (plist, maptext_za);
+
+	int ret = SUCCESS_OK_0;
+	if (!isok)
+		ret = -3; // Opened, couldn't parse the data.
+
+	Mem_FreeNull_ (maptext_za);
+	return ret;
+}
+
+
+RELATED_ (map_load_from_string) // SUPERCEDED BY THIS MOSTLY
+
+static qbool private_entitylist_parsemaptxt (map_t *plist, ccs *txt)
+{
+	map_reader_s _reader = {0}, *pread = &_reader;
+	pread->text_start = pread->datasrc = txt;
+
+	pread->plist = plist;
+	int iters = 0;
+	while (1) {
+		iters ++;
+		// Read some datasrc ...
+		if (COM_Parse_Basic(&pread->datasrc) == false) {
+			if (pread->depth == 0) {
+				plist->original_ent_count = plist->count; // May 31 2025
+				return true; // End of string data
+			}
+
+			return false; // We expected more data because depth is not 0, therefore this is "bad"
+		}
+
+		if (com_token[0] == '}') {
+			if (pread->depth == 1) { // (depth 1 ===> 0)
+				// STATE_CHECKCLASS_0; // End of entity
+			}
+			pread->depth --;
+			continue;
+		} else if (com_token[0] == '{') {
+			if (pread->depth == 0) {
+				// Allocate a new entity. (depth 0 ===> 1)
+				pread->p_ent = entitylist_add (pread->plist);
+			}
+			pread->depth ++;
+			continue;
+		}
+
+read_brush:
+		if (pread->depth >= 2) {
+			if (com_token[0] == '(') { // THAT IS A PAREN
+				// I suggest reading brush rows and then the "}" decreasing the depth
+				// NEW BRUSH
+				RELATED_ (entityx_s)
+				pread->p_brush = _LIFE_brush_add (&pread->p_ent->brushlist);
+				int is_ok = parsemap_readfaces_thru_curly_isok (pread, pread->p_brush);
+				if (is_ok == false)
+					return false; // Exited
+				//pread->depth --;
+				continue;
+			} else if (String_Match (com_token, "patchDef2")) {
+read_patch:
+				//patchDef2
+				//{ <---------------------------------- START
+				//	sg_tomb/wall019
+				//	( 3 3 0 0 0 )
+				//	(
+				//		( ( -749.894287 6939.077148 3254.350586 0.000000 0.561562 ) ( -678.014404 6939.077148 3254.350586 0.000000 0.280781 ) ( -606.134460 6939.077148 3254.350586 0.000000 0.000000 ) )
+				//		( ( -749.894287 6942.136719 3314.468750 0.235141 0.561562 ) ( -678.014404 6942.136719 3314.468750 0.235141 0.280781 ) ( -606.134460 6942.136719 3314.468750 0.235141 0.000000 ) )
+				//		( ( -749.894287 7006.000000 3325.045410 0.488005 0.561562 ) ( -678.014404 7006.000000 3325.045410 0.488005 0.280781 ) ( -606.134460 7006.000000 3325.045410 0.488005 0.000000 ) )
+				//	)
+				//}
+				RELATED_ (entityx_s)
+				//pread->p_patch = patchlist_add (&pread->p_ent->patchlist);
+
+				pread->p_brush = _LIFE_brush_add (&pread->p_ent->brushlist);
+				pread->p_brush->is_a_patch = true;
+				int is_ok = _parsemap_readfaces_patchblock_isok (pread, pread->p_brush);
+				if (is_ok == false)
+					return false; // Exited
+
+				continue;
+			}
+			// We shouldn't get here ...
+			return false;
+		}
+
+		// DEPTH = 1 and not { or } or patchDef2 therefore
+		// we are parsing epairs.
+entity_read_key:
+
+		stringlistappend (&pread->p_ent->pairslist, com_token); // KEY
+
+entity_read_value:
+		// Read another - Check for error condition
+		if (COM_Parse_Basic(&pread->datasrc) == false)
+			return false; // End of string data
+
+		stringlistappend (&pread->p_ent->pairslist, com_token); // KEY
+	} // While
+
+
+
+}
+
+RELATED_ (map_metric_cubeoid_mark map_metric_all map_metric_reset)
+qbool map_metric_again (map_t *plist)
+{
+	RELATED_ (_entity_s is_world_or_func_group)
+	map_metric_reset	(plist);
+	map_metric_all		(plist);
+	return true;
+}
+
+qbool map_reload (map_t *plist)
+{
+	baker_string_s *bsa = map_save_to_string_bsalloc (plist);
+	map_close (plist);
+	qbool ok = map_load_from_string (plist, bsa->string);
+	BakerString_Destroy_And_Null_It (&bsa);
+	return ok;
+}
+
+// is_world_or_func_group is now part of metric
+RELATED_ (map_save_to_string_bsalloc map_save_as)
+qbool map_load_from_string (map_t *plist, ccs *txt)
+{
+	qbool isok = private_entitylist_parsemaptxt (plist, txt);
+	if (!isok) return false;
+	// metric
+	map_metric_all			(plist);
+	map_metric_cubeoid_mark (plist);
+
+	for_each_entity_undeleted (entnum, plist, d_ent)
+		d_ent->original_brush_count = d_ent->brushlist.count;
+	for_each_end // for_each_entity
+
+	return true;
+}
+
+
+	//int j = Sys_CheckParm("-csg");
+	//ccs *mapfullpath = sys.argv[i+1];
+	//if (j && j + 1 < sys.argc &&
+
+	//{
+	//"classname" "info_decal"
+	//"targetname" "path_1"
+	//"texture" "maps_sh/dirt_field"
+	//"options" ""
+	//"target" "pathend_1"
+	//"drop" "32"
+	//"origin" "13092 -4442 32"
+	//}
+	//{
+	//"classname" "info_decal"
+	//"targetname" "pathend_1"
+	//"texture" "maps_sh/dirt_field"
+	//"options" ""
+	//"origin" "12772 -8634 32"
+	//}
+
+
+RELATED_ (String_Worldspawn_Value_For_Key_Sbuf)
+	typedef struct _info_decal_st {
+		vec3_t	origin;
+
+		char	*classname;
+		char	*targetname;
+		char	*target;			// "target" "pathend_1"
+
+		float	drop;				// "drop" "32"
+		float	force_z;
+		float	jitter_x;
+		float	jitter_y;
+		float	step;
+		vec3_t	surface_size;
+		char	*texture;			// "texture" "maps_sh/dirt_field"
+
+		struct _info_decal_st	*next;
+	} info_decal_s;
+
+#define NFO_SURFACE_SIZE_DEFAULT_512	512
+#define NFO_STEP_DEFAULT_384			384
+#define NFO_DROP_DEFAULT_32				32
+
+
+
+
+
+RELATED_ (VM_CL_project)
+
+
+
+CALLERS_ (csqc_delete_world_brushes_with_nondominant_texture, entitylist_perform_weld_num_done)
+void stringlist_append_entity_textures (stringlist_t *plist, entityx_s *r_ent)
+{
+	for_each_brush (brushnum, r_ent, d_brush)
+		for_each_brush_face (facenum, d_brush, d_face)
+			stringlistappend (plist, d_face->pbrtexture);
+		for_each_end // face
+	for_each_end // brush
+}
+
+int map_fieldname_prefix (map_t *hm, ccs *fieldname, ccs *prefix) // door1 --> $PREFIX_door1
+{
+	int num_changed = 0;
+	for_each_entity_undeleted (entnum, hm, d_ent)
+		for_each_key_val_pair (keyidx, d_ent, key, val)
+			if (false == String_Match (key, fieldname))
+				continue;
+
+			Z_StrDupf_Realloc (&d_ent->pairslist.strings[keyidx + 1], "%s%s", prefix, val);
+			num_changed ++;
+		for_each_end // key val pairs
+	for_each_end // for_each_entity
+	return num_changed;
+}
+
+
+ccs *map_get (const map_t *hm, int entnum, ccs *keyname)
+{
+	return entity_get(ITOE(hm, entnum), keyname); // SEPT12026PASS
+}
+
+qbool map_get_vec3 (const map_t *hm, int entnum, ccs *key, vec3_t vout)
+{
+	VectorClear (vout);
+
+	ccs *sval = entity_get(ITOE(hm, entnum), key); // SEPT12026PASS
+	if (sval) {
+		Math_atov3 (sval, vout);
+		return true;
+	}
+
+	return false;
+}
+
+int map_entity_find_start_after (map_t *hm, ccs *key, ccs *value, int start_after)
+{
+	for_each_entity_undeleted_start_after(entnum,hm,dent,start_after)
+		ccs *this_value = map_get (hm, entnum, key);
+		if (!this_value) continue; // Does not have a classname
+		if (false == String_Match (this_value, value)) continue; // No match
+
+		return entnum; // FOUND
+	for_each_end
+	return not_found_neg1;
+}
+
+CALLERS_ (csgw_nodes_build_this_track)
+int map_entity_find_start_after_lowy (map_t *hm, ccs *find_classname, int start_after)
+{
+	//float best_x = 999999;
+	float best_y = 999999;
+	int best_idx = not_found_neg1;
+	for_each_entity_undeleted_start_after(entnum,hm,dent,start_after)
+		ccs *classname = map_get (hm, entnum, "classname");
+		if (!classname || false == String_Match (classname, find_classname/* "node"*/))
+			continue;
+		// Now we need to find the next and previous.
+		map_get_vec3_dest_macro_DEFINE_ (hm, entnum, origin);
+		if (origin[1] < best_y) {
+			best_y = origin[1];
+			best_idx = entnum;
+		}
+	for_each_end
+	return best_idx;
+}
+
+void map_move (map_t *hm, vec3_t move_amount)
+{
+	map_move_epairs_origin	(hm, move_amount);
+	map_move_all_brushes_patches	(hm, move_amount); // Has texture scaling.
+}
+
+CALLERS_ (VM_map_append_map map_get)
+void map_append_map (map_t *dst, map_t *src)
+{
+	map_world_brushes_patches_copy	(dst, src);	// no keys, just brushes.
+	map_afterworld_copy				(dst, src);	// brushes and keys.
+}
+
+void map_append_map_with_move (map_t *dst_map, map_t *src_map, vec3_t translate_move)
+{
+	// Do we have a rotating door problem?  translate the origin and the brush, that's double.
+	// The only way we can check is looking for common/origin texture name
+
+	// If origin brush entity (per entity basis)
+	// Do not translate the brushes.
+
+	map_move_epairs_origin		(src_map, translate_move);
+	map_move_all_brushes_patches		(src_map, translate_move);
+	map_append_map				(dst_map, src_map);
+}
+
+// same classname and same targetname == nth
+int map_get_nthness_classnametargetname(map_t *plist, int my_entnum)
+{
+	entityx_s *efind = &plist->entity[my_entnum];
+
+	int nthness = 0;
+
+	ccs *efind_classname = map_get (plist, my_entnum, "classname");
+	if (!efind_classname) return not_found_neg1;
+
+	ccs *efind_targetname = map_get (plist, my_entnum, "targetname");
+	if (!efind_targetname) return not_found_neg1;
+
+	for_each_entity_original_even_deleted_ones_startnum (entnum, plist, e, AFTER_WORLD_1)
+		// REQUIRE CLASSNAME AND TARGETNAME MATCH
+		if (false == map_get_does_match (plist, entnum, "classname", efind_classname)) continue;
+		if (false == map_get_does_match (plist, entnum, "targetname", efind_targetname)) continue;
+
+		nthness ++; // Number of ones that are same classname and targetname
+
+		if (e == efind) {
+			Con_PrintLinef ("Entity %d %s %s: nthness == %d", my_entnum, efind_classname, efind_targetname, nthness);
+			return nthness;
+		} // e == efind
+	for_each_end // original entities even undeleted in .map
+
+	Con_PrintLinef ("Entity %d %s %s: nthness == " CON_RED "NOT FOUND", my_entnum, efind_classname, efind_targetname);
+	return not_found_neg1;
+}
+
+baker_string_s *map_save_to_string_bsalloc (map_t *plist)
+{
+//#pragma message ("Add a Zircon preprocess key to the worldspawn keys")
+	//baker_string_s *bs_maptext = BakerString_Create_Malloc ("");
+	baker_string_s *bs_maptext = BakerString_Create_Malloc_With_MegaBytes (100); // 100 MB
+
+	for_each_entity_undeleted (entnum, plist, r_ent)
+		// Print keys
+		BakerString_CatLinef (bs_maptext, "{ // Entity %d", entnum);
+
+		for_each_key_val_pair (keyidx, r_ent, key, val)
+			// August 5 2026 - keys with name "" no longer write.  Considered deleted.
+			if (key && key[0] == CHAR_NULL_0) continue; // map_key_delete: This is where it no longer saves.
+			BakerString_CatLinef (bs_maptext, QUOTED_S " " QUOTED_S, key, val);
+		for_each_end // key val pairs
+
+		for_each_brush_undeleted (brushnum, r_ent, r_brush)
+			BakerString_CatCFmt (bs_maptext, "{" NEWLINE);
+
+			if (r_brush->is_a_patch == false) {
+				// REAL BRUSH
+				for_each_brush_face (facenum, r_brush, r_face)
+					BakerString_CatCFmt (bs_maptext,
+						"( " VECTOR3_G  " ) "
+						"( " VECTOR3_G  " ) "
+						"( " VECTOR3_G  " ) "
+						" %s "
+						"[ " VECTOR4_G " ] "
+						"[ " VECTOR4_G " ] "
+						VECTOR3_G,
+						 VECTOR3_SEND(r_face->a),
+						 VECTOR3_SEND(r_face->b),
+						 VECTOR3_SEND(r_face->c),
+						 r_face->pbrtexture,
+						 VECTOR4_SEND(r_face->tex_axis_s),
+						 VECTOR4_SEND(r_face->tex_axis_t),
+						 VECTOR3_SEND(r_face->faceparms)
+						 );
+
+					// Any extras add a space
+					for (int j = 3; j < r_face->trail_count; j ++) {
+						BakerString_CatCFmt (bs_maptext, " " FLOAT_LOSSLESS_FORMAT, r_face->faceparms[j] );
+					}
+					BakerString_CatC (bs_maptext, NEWLINE);
+				for_each_end // for_each_brush_face
+			} else {
+i_am_patch:
+					BakerString_CatCFmt (bs_maptext, "patchDef2" NEWLINE);
+					BakerString_CatCFmt (bs_maptext, "{" NEWLINE);
+					// caves/3i_sand2
+					BakerString_CatCFmt (bs_maptext, "%s" NEWLINE, r_brush->texture);
+					// ( 9 3 0 0 0 )
+					BakerString_CatCFmt (bs_maptext, "( " FLOAT_LOSSLESS_FORMAT " " FLOAT_LOSSLESS_FORMAT " " FLOAT_LOSSLESS_FORMAT " " FLOAT_LOSSLESS_FORMAT " " FLOAT_LOSSLESS_FORMAT " )" NEWLINE, r_brush->patch_rows, r_brush->patch_cols, r_brush->other3[0], r_brush->other3[1], r_brush->other3[2]);
+					BakerString_CatCFmt (bs_maptext, "(" NEWLINE);
+
+					for_each_const_patch_row (rownum, r_brush, r_patchrow)
+						//patchrow_s *ppr = &p_brush->patchrowlist.patchrow[prow];
+						BakerString_CatCFmt (bs_maptext, "( " NEWLINE);
+						for_each_patch_column (columnnum, r_brush, r_patchrow)
+							// These don't perfectly match J.A.C.K. output which has extra zeroes
+							// in the decimal places sometimes.
+							BakerString_CatCFmt (bs_maptext, "( %g %g %g %8g %8g )" NEWLINE,
+								r_patchrow->flots[columnnum * 5 + 0],
+								r_patchrow->flots[columnnum * 5 + 1],
+								r_patchrow->flots[columnnum * 5 + 2],
+								r_patchrow->flots[columnnum * 5 + 3],
+								r_patchrow->flots[columnnum * 5 + 4]
+							);
+						for_each_end // patch_column
+						BakerString_CatCFmt (bs_maptext, " )" NEWLINE);
+					for_each_end // patch_row
+
+					BakerString_CatCFmt (bs_maptext, ")" NEWLINE);
+					BakerString_CatCFmt (bs_maptext, "}" NEWLINE);
+			} // if patch not a brush
+
+			BakerString_CatCFmt (bs_maptext, "}" NEWLINE);
+		for_each_end // for_each_brush
+		BakerString_CatCFmt (bs_maptext, "}" NEWLINE);
+	for_each_end // for_each_entity
+	return bs_maptext;
+}
+
+

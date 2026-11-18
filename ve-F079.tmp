@@ -1,0 +1,487 @@
+typedef struct {
+    int start_stmt;
+    int end_stmt;
+    int else_stmt;
+} if_structure_t;
+
+typedef struct {
+    char ent_name[64];
+    char field_name[64];
+} ptr_reg_t;
+
+static ptr_reg_t *temp_ptrs = NULL;
+static char last_spawn_target[128] = "self";
+
+const char* FindGlobalName(prvm_prog_t *prog, int32_t vm_offset) {
+    if (!prog || !prog->globaldefs || vm_offset <= 0) return NULL;
+
+    for (int i = 0; i < prog->numglobaldefs; i++) {
+        uint32_t type = prog->globaldefs[i].type;
+        uint32_t pure_type = type & ~DEF_SAVEGLOBAL;
+
+        if (prog->globaldefs[i].ofs == (uint32_t)vm_offset && pure_type != ev_void) {
+            int32_t name_ofs = prog->globaldefs[i].s_name;
+            if (name_ofs > 0) {
+                const char *name = PRVM_GetString(prog, name_ofs);
+                if (name && name[0] != '\0' && name[0] != '$' && strstr(name, "IMMEDIATE") == NULL) {
+                    if (pure_type == ev_float && !(type & DEF_SAVEGLOBAL)) {
+                        return NULL;
+                    }
+                    return name;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+const char* FindFieldName(prvm_prog_t *prog, int32_t vm_offset) {
+    if (!prog || !prog->fielddefs || vm_offset < 0) return NULL;
+
+    for (int i = 0; i < prog->numfielddefs; i++) {
+        if (prog->fielddefs[i].ofs == (uint32_t)vm_offset) {
+            int32_t name_ofs = prog->fielddefs[i].s_name;
+            if (name_ofs > 0) {
+                const char *name = PRVM_GetString(prog, name_ofs);
+                if (name && name[0] != '\0') return name;
+            }
+        }
+    }
+    return NULL;
+}
+
+const char* FindEntityVariableName(prvm_prog_t *prog, int32_t vm_offset) {
+    if (vm_offset <= 0) return "world";
+    
+    const char *name = FindGlobalName(prog, vm_offset);
+    if (name) return name;
+
+    if (last_spawn_target[0] != '\0') return last_spawn_target;
+
+    return "self";
+}
+
+void FormatOperand(prvm_prog_t *prog, int32_t vm_offset, char *out_buf, size_t buf_size) {
+    if (vm_offset <= 0) {
+        dpsnprintf(out_buf, buf_size, "world");
+        return;
+    }
+
+    if (prog && prog->globals.ip && vm_offset < prog->numglobals) {
+        int32_t int_val = prog->globals.ip[vm_offset];
+        float float_val = prog->globals.fp[vm_offset];
+
+        const char *var_name = FindGlobalName(prog, vm_offset);
+        if (var_name) {
+            dpsnprintf(out_buf, buf_size, "%s", var_name);
+            return;
+        }
+
+        if (int_val > 0 && int_val < prog->stringssize) {
+            const char *str_val = PRVM_GetString(prog, int_val);
+            if (str_val && str_val[0] != '\0' && strstr(str_val, ".qc") == NULL) {
+                dpsnprintf(out_buf, buf_size, "\"%s\"", str_val);
+                return;
+            }
+        }
+
+        if (float_val == (float)(int32_t)float_val) {
+            dpsnprintf(out_buf, buf_size, "%d", (int32_t)float_val);
+            return;
+        } else {
+            dpsnprintf(out_buf, buf_size, "%g", float_val);
+            return;
+        }
+    }
+
+    const char *var_name = FindGlobalName(prog, vm_offset);
+    if (var_name) {
+        dpsnprintf(out_buf, buf_size, "%s", var_name);
+        return;
+    }
+
+    dpsnprintf(out_buf, buf_size, "temp_%d", vm_offset);
+}
+
+const char* GetQCOperatorString(const char *opname) {
+    if (!strcmp(opname, "EQ_F") || !strcmp(opname, "EQ_V") || !strcmp(opname, "EQ_S") || 
+        !strcmp(opname, "EQ_E") || !strcmp(opname, "EQ_FNC")) return "==";
+    if (!strcmp(opname, "NE_F") || !strcmp(opname, "NE_V") || !strcmp(opname, "NE_S") || 
+        !strcmp(opname, "NE_E") || !strcmp(opname, "NE_FNC")) return "!=";
+    if (!strcmp(opname, "LE")) return "<=";
+    if (!strcmp(opname, "GE")) return ">=";
+    if (!strcmp(opname, "LT")) return "<";
+    if (!strcmp(opname, "GT")) return ">";
+    if (!strcmp(opname, "ADD_F") || !strcmp(opname, "ADD_V")) return "+";
+    if (!strcmp(opname, "SUB_F") || !strcmp(opname, "SUB_V")) return "-";
+    if (!strcmp(opname, "MUL_F") || !strcmp(opname, "MUL_V") || !strcmp(opname, "MUL_FV") || !strcmp(opname, "MUL_VF")) return "*";
+    if (!strcmp(opname, "DIV_F")) return "/";
+    if (!strcmp(opname, "BITAND")) return "&";
+    if (!strcmp(opname, "BITOR")) return "|";
+    if (!strcmp(opname, "AND")) return "&&";
+    if (!strcmp(opname, "OR")) return "||";
+    return opname;
+}
+
+qbool IsTempConsumed(prvm_prog_t *prog, int current_stmt, int reg) {
+    for (int next = 1; next <= 3 && (current_stmt + next) < prog->numstatements; next++) {
+        mstatement_t *st = &prog->statements[current_stmt + next];
+        if (st->operand[0] == reg || st->operand[1] == reg) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int GetJumpTarget(mstatement_t *st) {
+    if (st->op == OP_IF || st->op == OP_IFNOT || st->op == OP_GOTO) {
+        return st->jumpabsolute;
+    }
+    return -1;
+}
+
+void PrintInstructionFormatted(prvm_prog_t *prog, int current_stmt, mstatement_t *st, int indent_level) {
+    uint32_t op = st->op;
+    int32_t a = st->operand[0];
+    int32_t b = st->operand[1];
+    int32_t c = st->operand[2];
+
+    char indent[32] = "";
+    for (int i = 0; i < indent_level && i < 15; i++) {
+        dp_strlcat(indent, "    ", sizeof(indent));
+    }
+
+    if (op >= (uint32_t)(sizeof(prvm_opnames) / sizeof(prvm_opnames[0]))) {
+        Con_Printf("%sUNKNOWN_OP_%u(%d, %d, %d)\n", indent, op, a, b, c);
+        return;
+    }
+
+    const char *opname = prvm_opnames[op];
+    if (opname[0] == '^' && opname[1] != '\0') {
+        opname += 2;
+    }
+
+    // Ignore parameter stores, unless it's a store from OFS_RETURN right after a call
+    if ((op >= OP_STORE_F && op <= OP_STORE_FNC) && (b >= OFS_PARM0 && b < OFS_PARM0 + 24)) return;
+    if (op >= OP_LOAD_F && op < OP_ADDRESS && IsTempConsumed(prog, current_stmt, c)) return;
+    if (((op >= OP_EQ_F && op <= OP_GT) || (op >= OP_AND && op <= OP_BITOR)) && IsTempConsumed(prog, current_stmt, c)) return;
+
+    char operand_a[128], operand_b[128], operand_c[128];
+    FormatOperand(prog, a, operand_a, sizeof(operand_a));
+    FormatOperand(prog, b, operand_b, sizeof(operand_b));
+    FormatOperand(prog, c, operand_c, sizeof(operand_c));
+
+    if (op >= OP_CALL0 && op <= OP_CALL8) { 
+        qbool has_return_assign = false;
+
+        // Check if next instruction assigns OFS_RETURN to a target variable or pointer
+        if ((current_stmt + 1) < prog->numstatements) {
+            mstatement_t *next_st = &prog->statements[current_stmt + 1];
+            if ((next_st->op >= OP_STORE_F && next_st->op <= OP_STORE_FNC) && next_st->operand[0] == OFS_RETURN) {
+                FormatOperand(prog, next_st->operand[1], last_spawn_target, sizeof(last_spawn_target));
+                has_return_assign = true;
+            }
+			// Catch store-pointer cases (e.g., bodyque_head.owner = spawn())
+            else if ((next_st->op >= OP_STOREP_F && next_st->op <= OP_STOREP_FNC) && next_st->operand[0] == OFS_RETURN) {
+                int ptr_reg = next_st->operand[1];
+                if (temp_ptrs && ptr_reg >= 0 && ptr_reg < prog->numglobals && temp_ptrs[ptr_reg].ent_name[0] != '\0') {
+                    dpsnprintf(last_spawn_target, sizeof(last_spawn_target), "%s.%s", temp_ptrs[ptr_reg].ent_name, temp_ptrs[ptr_reg].field_name);
+                } else {
+                    const char *field_name = FindFieldName(prog, ptr_reg);
+                    if (field_name) {
+                        dpsnprintf(last_spawn_target, sizeof(last_spawn_target), "self.%s", field_name);
+                    }
+                }
+                has_return_assign = true;
+            }
+        }
+
+        int num_args = op - OP_CALL0;
+        char args_str[256] = "";
+        for (int i = 0; i < num_args; i++) {
+            int target_parm = OFS_PARM0 + (i * 3);
+            char arg_buf[64] = "0";
+
+            for (int back = 1; back <= 8 && (current_stmt - back) >= 0; back++) {
+                mstatement_t *prev = &prog->statements[current_stmt - back];
+                if ((prev->op >= OP_STORE_F && prev->op <= OP_STORE_FNC) && prev->operand[1] == target_parm) {
+                    FormatOperand(prog, prev->operand[0], arg_buf, sizeof(arg_buf)); // Keep your arg parsing
+                    break;
+                }
+            }
+
+            dp_strlcat(args_str, arg_buf, sizeof(args_str));
+            if (i < num_args - 1) dp_strlcat(args_str, ", ", sizeof(args_str));
+        }
+
+        if (has_return_assign) {
+            // If the store happens on the very next line, we can skip printing the standalone spawn 
+            // and let the store line handle it, OR print it combined:
+            Con_Printf("%s%s = %s (%s);\n", indent, last_spawn_target, operand_a, args_str);
+            return; // Skip the subsequent store statement since we consumed it here!
+        } else {
+            Con_Printf("%s%s (%s);\n", indent, operand_a, args_str);
+        }
+    } 
+    else if (op == OP_IF || op == OP_IFNOT) { 
+        int target_stmt = GetJumpTarget(st);
+        char condition_expr[256] = "";
+        qbool resolved = false;
+
+        for (int back = 1; back <= 4 && (current_stmt - back) >= 0; back++) {
+            mstatement_t *prev = &prog->statements[current_stmt - back];
+            if (prev->operand[2] == a && ((prev->op >= OP_EQ_F && prev->op <= OP_GT) || (prev->op >= OP_AND && prev->op <= OP_BITOR))) { 
+                char pa[128], pb[128];
+                int prev_a = prev->operand[0];
+                qbool found_load = false;
+                for (int fback = 1; fback <= 4 && (current_stmt - back - fback) >= 0; fback++) {
+                    mstatement_t *fprev = &prog->statements[current_stmt - back - fback];
+                    if ((fprev->op >= OP_LOAD_F && fprev->op <= OP_ADDRESS) && fprev->operand[2] == prev_a) {
+                        char fa[64], fb[64];
+                        FormatOperand(prog, fprev->operand[0], fa, sizeof(fa));
+                        FormatOperand(prog, fprev->operand[1], fb, sizeof(fb));
+                        dpsnprintf(pa, sizeof(pa), "%s.%s", fa, fb);
+                        found_load = true;
+                        break;
+                    }
+                }
+                if (!found_load) FormatOperand(prog, prev->operand[0], pa, sizeof(pa));
+
+                FormatOperand(prog, prev->operand[1], pb, sizeof(pb));
+                const char *p_opname = prvm_opnames[prev->op];
+                if (p_opname[0] == '^' && p_opname[1] != '\0') p_opname += 2;
+
+                dpsnprintf(condition_expr, sizeof(condition_expr), "%s %s %s", pa, GetQCOperatorString(p_opname), pb);
+                resolved = true;
+                break;
+            }
+        }
+
+        if (!resolved) dpsnprintf(condition_expr, sizeof(condition_expr), "%s", operand_a);
+
+        if (op == OP_IFNOT) Con_Printf("%sif (!(%s)) goto statement_%d;\n", indent, condition_expr, target_stmt);
+        else Con_Printf("%sif (%s) goto statement_%d;\n", indent, condition_expr, target_stmt);
+    } 
+    else if (op == OP_GOTO) { 
+        int target_stmt = GetJumpTarget(st);
+        Con_Printf("%sgoto statement_%d;\n", indent, target_stmt);
+    } 
+    else if (op >= OP_STORE_F && op <= OP_STORE_FNC) { 
+		// Skip store if it was already handled as a return assignment from call
+        if (a == OFS_RETURN) return;
+        Con_Printf("%s%s = %s;\n", indent, operand_b, operand_a);
+    } 
+    else if (op >= OP_STOREP_F && op <= OP_STOREP_FNC) { 
+        if (a == OFS_RETURN) return; // Handled by lookahead if present
+        if (temp_ptrs && b >= 0 && b < prog->numglobals && temp_ptrs[b].ent_name[0] != '\0') {
+            Con_Printf("%s%s.%s = %s;\n", indent, temp_ptrs[b].ent_name, temp_ptrs[b].field_name, operand_a);
+        } else {
+            const char *field_name = FindFieldName(prog, b);
+            if (field_name) {
+                Con_Printf("%s%s.%s = %s;\n", indent, last_spawn_target, field_name, operand_a);
+            } else {
+                Con_Printf("%s*%s = %s;\n", indent, operand_b, operand_a);
+            }
+        }
+    } 
+    else if (op >= OP_LOAD_F && op <= OP_ADDRESS) { 
+        const char *field_name = FindFieldName(prog, b);
+        
+        if (op == OP_ADDRESS) {
+            if (temp_ptrs && c >= 0 && c < prog->numglobals) {
+                const char *ent_var = FindEntityVariableName(prog, a);
+                dp_strlcpy(temp_ptrs[c].ent_name, ent_var, sizeof(temp_ptrs[c].ent_name));
+                if (field_name) {
+                    dp_strlcpy(temp_ptrs[c].field_name, field_name, sizeof(temp_ptrs[c].field_name));
+                } else {
+                    char fallback_field[64];
+                    FormatOperand(prog, b, fallback_field, sizeof(fallback_field));
+                    dp_strlcpy(temp_ptrs[c].field_name, fallback_field, sizeof(temp_ptrs[c].field_name));
+                }
+            }
+            return;
+        }
+
+        if (field_name) {
+            Con_Printf("%s%s = %s.%s;\n", indent, operand_c, operand_a, field_name);
+        } else {
+            Con_Printf("%s%s = %s.%s;\n", indent, operand_c, operand_a, operand_b);
+        }
+    } 
+    else if (op == OP_DONE || op == OP_RETURN) {
+        if (a != 0) Con_Printf("%sreturn %s;\n", indent, operand_a);
+        else Con_Printf("%sreturn;\n", indent);
+    }
+    else { 
+        const char *op_symbol = GetQCOperatorString(opname);
+        Con_Printf("%s%s = %s %s %s;\n", indent, operand_c, operand_a, op_symbol, operand_b);
+    }
+}
+
+void PRVM_PrintFunctionStatementsByName(prvm_prog_t *prog, const char *function_name) {
+    if (!prog || !function_name || !function_name[0]) return;
+
+    mfunction_t *f = PRVM_ED_FindFunction(prog, function_name);
+    if (!f) {
+        Con_Printf("Function '%s' not found in program.\n", function_name);
+        return;
+    }
+
+    const char *func_name = PRVM_GetString(prog, f->s_name);
+    if (!func_name || !func_name[0]) func_name = function_name;
+
+    int firststatement = f->first_statement;
+    if (firststatement < 0) {
+        Con_Printf("\n// Function: %s\n// Built-in function #%d\n\n", func_name, -firststatement);
+        return;
+    }
+
+    int endstatement = prog->numstatements;
+    for (int i = 0; i < prog->numfunctions; i++) {
+        if (endstatement > prog->functions[i].first_statement 
+            && firststatement < prog->functions[i].first_statement) {
+            endstatement = prog->functions[i].first_statement;
+        }
+    }
+
+    qbool *is_jump_target = (qbool *)Z_Malloc(prog->numstatements * sizeof(qbool));
+    if_structure_t *if_blocks = (if_structure_t *)Z_Malloc(prog->numstatements * sizeof(if_structure_t));
+    temp_ptrs = (ptr_reg_t *)Z_Malloc(prog->numglobals * sizeof(ptr_reg_t));
+    
+    for (int i = 0; i < prog->numstatements; i++) {
+        if_blocks[i].else_stmt = -1;
+    }
+
+    for (int i = firststatement; i < endstatement; i++) {
+        mstatement_t *st = &prog->statements[i];
+        
+        if (st->op == OP_IFNOT) {
+            int jump_target = st->jumpabsolute;
+            
+            if (jump_target > i + 1 && prog->statements[jump_target - 1].op == OP_GOTO) {
+                int else_end = prog->statements[jump_target - 1].jumpabsolute;
+                if_blocks[i].start_stmt = i;
+                if_blocks[i].else_stmt = jump_target;
+                if_blocks[i].end_stmt = else_end;
+            } else {
+                if_blocks[i].start_stmt = i;
+                if_blocks[i].else_stmt = -1;
+                if_blocks[i].end_stmt = jump_target;
+            }
+        } else {
+            int target = GetJumpTarget(st);
+            if (target >= 0 && target < prog->numstatements) {
+                is_jump_target[target] = true;
+            }
+        }
+    }
+
+    for (int i = firststatement; i < endstatement; i++) {
+        if (if_blocks[i].start_stmt > 0) {
+            if (if_blocks[i].else_stmt >= 0) {
+                is_jump_target[if_blocks[i].else_stmt] = false;
+            }
+            if (if_blocks[i].end_stmt >= 0) {
+                is_jump_target[if_blocks[i].end_stmt] = false;
+            }
+        }
+    }
+
+    dp_strlcpy(last_spawn_target, "self", sizeof(last_spawn_target));
+
+    Con_Printf("\nvoid () %s =\n{\n", func_name);
+
+    int indent_level = 1;
+
+    for (int statement_num = firststatement; statement_num < endstatement; statement_num++) {
+        for (int i = firststatement; i < endstatement; i++) {
+            if (if_blocks[i].start_stmt > 0 && if_blocks[i].end_stmt == statement_num) {
+                indent_level--;
+                char indent[32] = "";
+                for (int k = 0; k < indent_level && k < 15; k++) dp_strlcat(indent, "    ", sizeof(indent));
+                Con_Printf("%s}\n", indent);
+                if_blocks[i].start_stmt = 0;
+            }
+            if (if_blocks[i].else_stmt == statement_num && if_blocks[i].start_stmt > 0) {
+                indent_level--;
+                char indent[32] = "";
+                for (int k = 0; k < indent_level && k < 15; k++) dp_strlcat(indent, "    ", sizeof(indent));
+                Con_Printf("%s} else {\n", indent);
+                indent_level++;
+            }
+        }
+
+        if (is_jump_target[statement_num]) {
+            Con_Printf("statement_%d:\n", statement_num);
+        }
+
+        mstatement_t *st = &prog->statements[statement_num];
+
+        if (st->op == OP_IFNOT && if_blocks[statement_num].end_stmt > 0) {
+            char condition_expr[256] = "";
+            qbool resolved = false;
+
+            int a = st->operand[0];
+            for (int back = 1; back <= 4 && (statement_num - back) >= 0; back++) {
+                mstatement_t *prev = &prog->statements[statement_num - back];
+                if (prev->operand[2] == a && ((prev->op >= OP_EQ_F && prev->op <= OP_GT) || (prev->op >= OP_AND && prev->op <= OP_BITOR))) {
+                    char pa[128], pb[128];
+                    int prev_a = prev->operand[0];
+                    qbool found_load = false;
+                    for (int fback = 1; fback <= 4 && (statement_num - back - fback) >= 0; fback++) {
+                        mstatement_t *fprev = &prog->statements[statement_num - back - fback];
+                        if ((fprev->op >= OP_LOAD_F && fprev->op <= OP_ADDRESS) && fprev->operand[2] == prev_a) {
+                            char fa[64], fb[64];
+                            FormatOperand(prog, fprev->operand[0], fa, sizeof(fa));
+                            FormatOperand(prog, fprev->operand[1], fb, sizeof(fb));
+                            dpsnprintf(pa, sizeof(pa), "%s.%s", fa, fb);
+                            found_load = true;
+                            break;
+                        }
+                    }
+                    if (!found_load) FormatOperand(prog, prev->operand[0], pa, sizeof(pa));
+
+                    FormatOperand(prog, prev->operand[1], pb, sizeof(pb));
+                    const char *p_opname = prvm_opnames[prev->op];
+                    if (p_opname[0] == '^' && p_opname[1] != '\0') p_opname += 2;
+
+                    dpsnprintf(condition_expr, sizeof(condition_expr), "%s %s %s", pa, GetQCOperatorString(p_opname), pb);
+                    resolved = true;
+                    break;
+                }
+            }
+
+            if (!resolved) {
+                FormatOperand(prog, a, condition_expr, sizeof(condition_expr));
+            }
+
+            char indent[32] = "";
+            for (int k = 0; k < indent_level && k < 15; k++) dp_strlcat(indent, "    ", sizeof(indent));
+
+            Con_Printf("%sif (%s) {\n", indent, condition_expr);
+            indent_level++;
+            continue;
+        }
+
+        if (st->op == OP_GOTO) {
+            qbool is_else_skip = false;
+            for (int i = firststatement; i < endstatement; i++) {
+                if (if_blocks[i].else_stmt == statement_num + 1) {
+                    is_else_skip = true;
+                    break;
+                }
+            }
+            if (is_else_skip) continue;
+        }
+
+        PrintInstructionFormatted(prog, statement_num, st, indent_level);
+
+        if (st->op == OP_DONE) break;
+    }
+
+    Con_Printf("};\n\n");
+    Z_Free(is_jump_target);
+    Z_Free(if_blocks);
+    Z_Free(temp_ptrs);
+    temp_ptrs = NULL;
+}

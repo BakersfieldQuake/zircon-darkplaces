@@ -1,0 +1,312 @@
+// bundle/engine/form1.txt How do we want this to work
+// Get listview working first
+
+Form	onload:DevInit FontSize: 10
+
+Label 	rect:"8,9" Forecolor:white fontsize:28 caption:"^7dev^xfa0info" /*comment here*/
+
+
+//Label rect:"-200,21,52,12" Forecolor:Yellow FontSize:8 caption:"Shaders"
+Label 	name:LabelTitle rect:"112,21" Forecolor:white FontSize:11 caption:"Changing title" /*comment here*/
+Label 	name:LabelEntries Rect:"410,21" FontSize:11 forecolor:white caption:"Entries"
+
+TabSelect
+	Name:TabSelect1
+	Rect:"8,37,103,320" // TabSelect autosizes so width/height are optional
+	//IsRounded:True	// Rounded button style or not
+	FontSize:9
+	AutoSize:0
+	BackAlpha:1 // 0.5
+	CellPaddingXPct:1.0
+
+	List:"Entities,Models,Sounds,Textures,Shaders,Globals,Fields,Map,Environment,CSQC Entities,CSQC Globals,CSQC Fields,Zircon Extras"
+	onchange:"DevTabSelectOnChange" 
+
+	CellPaddingYPct:0.25
+	IsRounded:False
+	FontDescendPct:0.5
+	forecolorselected:#fff // "RGB(255, 255, 255)"
+	backcolorselected:#005AE6
+	forecolor:#888
+	backcolor:#0033a7
+	// backcolor:#ff33a7
+			 
+// TextBox		rect:"1000,90,200,36" Text:"Details" /*backcolor:"RGB(0,90,230)"*/ /*onchange:check1_click*/
+
+ListView	name:List1 Rect:"112,37,350,320"
+			backcolor:#005AE6
+			forecolor:white
+			backcolorfocusselected:black
+			backcolorselected:#321
+			FontSize: 9
+			OnChange:DevListViewOnChange
+			OnSort:DevListViewSort
+			IsSorted:True
+			ImageAlpha:1
+			ImageColor:#fff
+
+ListView	name:List2 
+			Rect:"447,37,165,298" // Short
+			// Rect:"447,37,165,320" Tall
+			backcolor:#005AE6
+			forecolor:white
+			backcolorfocusselected:black
+			backcolorselected:#444
+			ColumnCount:2
+			ColumnWidths:"75,110"
+			FontSize: 9
+			IsHidden:True
+			OnSort:DevListViewSort
+			IsSorted:True
+			ImageAlpha:1
+			ImageColor:#fff
+			ColumnHeaders:"Key,Value"
+
+Image Name:ImageTexture Rect:"447,150,100,100"
+	IsHidden:True
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/folder.png"
+
+Image Name:ImageParticleFont Rect:"366,92,224,224"
+	BackColor:#000
+	BackAlpha:1
+	IsHidden:True
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"particles/particlefont"
+	CursorImageName:"engine/icons/outlined.png"
+	backcolorselected:#f00
+
+Rectangle Name:RectColor Rect:"366,92,224,224"
+
+//ImageGrid Name:GridParticles Rect:"350,80,249,245" 
+
+Label Name:LabelTexNum Rect:"180,65" FontSize:11 forecolor:white caption:"Tex 200" AutoSize:1
+
+ImageGrid Name:GridParticles Rect:"222,64,256,256" 
+	Autosize:1
+	GridAutosizeColumns:8 GridAutosizeRows:8
+	GridRows:8 GridColumns:8
+	// col header is font size
+	GridRowHeaderWidth:24
+	GridHeaders:3 // 3 is both
+	
+	FontSize:10
+	
+	GridCellPadding:2 // subtracts from cell width, right?
+	ImageMargin:2 // Yes, subtracts from internal image.
+	BackAlpha:1 
+	//BackColor:#005ae6 
+	BackColor:#222
+	
+	BackColorSelected:#fff // 444
+	BackColorFocusSelected:#fcc // f00 
+	ColumnHeaders:"0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+	RowHeaders:"0,16,32,48,64,80,96,112,128,144,160,176,192,208,224,240"//,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,AA,AB,AC,AD" 
+	ForeColorSelected:#fff
+	//CursorImageName:"engine/icons/select.png"
+	CursorImageName:"engine/icons/outlined.png"
+	GridCellWidth:28
+	GridCellHeight:28 
+	GridCellBackColor:#333
+	ImageAlpha:1 
+	ImageColor:#fff 
+	ImageName:"particles/particlefont"
+	OnChange:DevGridParticlesOnChange
+	//ImageList:/",menu_gfx/potion_red_thumb" 
+
+	//DoubleClick:Map_DoubleClick
+	//KeyEvent:Map_KeyEvent
+
+//Image Name:ImageParticleFontCursor Rect:"366,92,14,14" // Square outline
+//	IsHidden:False
+//	ImageAlphaCycleTime:4
+//	ImageAlpha:1 
+//	ImageColor:#fff
+//	ImageName:"engine/icons/select.png"
+//
+
+
+
+//Label Name:LabelParticleRow0 Rect:"354,95" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow1 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow2 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow3 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow4 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow5 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow6 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow7 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow8 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow9 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow10 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow11 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow12 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow13 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow14 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleRow15 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//
+//Label Name:LabelParticleCol0 Rect:"366,79" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol1 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol2 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol3 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol4 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol5 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol6 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol7 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol8 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol9 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol10 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol11 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol12 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol13 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol14 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+//Label Name:LabelParticleCol15 Rect:"366,69" FontSize:11 forecolor:white caption:"0"
+
+
+
+ListView Name:List3 Rect:"266,57,331,269" // Rect:"300,117,288,208"
+			
+			HaveExtCloser:True
+			HaveExtMover:True
+			HaveExtSizer:True
+			ColumnCount:2
+			ColumnWidths:"25,291"
+			
+			backcolor:black
+			forecolor:white
+			backcolorselected:#ccc
+
+			backcolorfocusselected:#ddf
+			forecolorselected:black
+
+			FontSize: 9
+			//IsSorted:True
+			ImageAlpha:1
+			ImageColor:#fff
+			ColumnHeaders:"#,Text"
+			List:"server EDICT 1,,absmax,'561 305 61.03125',absmin,'527 271 3.03125',air_finished,15.1028776,ammo_shells,25"			
+
+
+
+Button Name:ButtonShowText Rect:"615,36,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	//CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/text-bgcolor.png"
+
+
+Button Name:ButtonShowList3 Rect:"615,66,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/external-link.png"
+
+Button Name:ButtonMarker Rect:"615,96,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/pencil-edit.png"
+
+Button Name:ButtonMarkerClear Rect:"615,126,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/circle-x.png"
+
+Button Name:ButtonFolder Rect:"615,156,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/folder.png"
+
+
+Button Name:ButtonPlaySound Rect:"615,186,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/player-play-circle.png"
+
+Button Name:ButtonStopSound Rect:"615,216,25,25"
+	BackAlpha:1 
+	BackColor:#222
+	CellPaddingXPct:0.5 
+	FontDescendPct:0.75 
+	FontSize:12 
+	ForeColorSelected:#fff 
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/player-pause.png"
+
+//Button Name:ButtonBase64 Rect:"615,246,25,25"
+//	BackAlpha:1 
+//	BackColor:#222
+//	CellPaddingXPct:0.5 
+//	FontDescendPct:0.75 
+//	FontSize:12 
+//	ForeColorSelected:#fff 
+//	ImageAlpha:1 
+//	ImageColor:#fff
+//	ImageName:"engine/icons/evericons/air-play.png"
+
+TextBox 	name:TxtFilter Rect:"447,342,165,15" // 963 - 819, 37 + 320 357
+			HaveExtCloser:True
+			HaveExtMover:True
+			BeforeClose:DevTxtFilterBeforeClose
+			forecolor:black
+			NoText:Filter
+			NoTextColor:#9aa //#432
+			FontSize: 9
+
+ContextMenu // 7
+  Rect:"-2000,200,40,40" // Beyond:535 320 -- autosize enlarges
+  Name:ContextMenuX
+  FontSize:12
+  Autosize:1
+  CellPaddingYPct:"0.36"
+  //CellSpacingYPct:"0.0625"
+  BackColor:#ccc
+  BackColorSelected:#334
+  IsHidden:True // Required for ContextMenu -- they exist only when they have focus.
+					// Text, Checked, FunctionString, FuncString? Calls the Function sends the string as a name
+  List:"Explore here ...,0,ExploreHere,,Copy Path ...,0,CopyPath,X,-,0,-,X,View Text,0,ViewText,X,-,0,-,X,Filename5,0,-,X"
+
+Button Name:ButtonExit Rect:"602,16,12,12"
+	BackAlpha:1 
+	BackColor:#222
+	BackColorSelected:#222
+	ImageSize:8 // This is image size (it will be centered)
+	ImageAlpha:1 
+	ImageColor:#fff
+	ImageName:"engine/icons/evericons/x.png"
+
