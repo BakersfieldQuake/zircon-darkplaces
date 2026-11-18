@@ -142,8 +142,10 @@ jobs:
         continue-on-error: true
         run: |
           # WINDIR is set under MSYS2, so the engine makefile auto-selects the mingw
-          # target and produces the .exe names. mingw links jpeg/zlib/SDL2 shared.
-          make -f makefile -j"$(nproc)" sdl-release sv-release
+          # target and produces the .exe name. Client only: the package ships the
+          # Windows client, not a Windows dedicated server, and the makefile's mingw
+          # OBJ_SV (unix sys/thread objects) does not link on mingw.
+          make -f makefile -j"$(nproc)" sdl-release
 
       - name: Clean retry (no cache)
         id: retry
@@ -154,7 +156,7 @@ jobs:
           echo "Warm build FAILED — clean retry. Rolling failures: $(cat .ci_failcount)" >> "$GITHUB_STEP_SUMMARY"
           make -f makefile clean || true
           rm -rf build-obj
-          make -f makefile -j"$(nproc)" sdl-release sv-release
+          make -f makefile -j"$(nproc)" sdl-release
 
       - name: List outputs
         run: ls -la zircon_beta_windows_*.exe
@@ -176,9 +178,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zircon-windows-x86_64
-          path: |
-            zircon_beta_windows_sdl.exe
-            zircon_beta_windows_dedicated_server.exe
+          path: zircon_beta_windows_sdl.exe
           if-no-files-found: error
-          # Note: the .exe need matching runtime DLLs alongside them to actually run
+          # Note: the .exe needs matching runtime DLLs alongside it to actually run
           # (SDL2.dll, libjpeg, zlib1, libcurl, ...).
