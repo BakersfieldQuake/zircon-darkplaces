@@ -22,7 +22,9 @@ void CSG_Macro_Perform_Exit_1_Error (ccs *fmt, ...)
 // JACK does C:/galaxy/zircon as the startup directory here.
 void CSG_Perform_Early_Chdir (int csg_argnum) // csg console command DOES NOT COME HERE
 {
+#ifdef _WIN32
 	Sys_Console_Init_HOutput_WIN32 (); // Activate HOUTPUT we hope
+#endif // _WIN32
 	ccs *s_cwd_ta = FS_Getcwd_No_Trailing_Slash_Unsafe_TempAlloc ();
 	va_copy_1024 (curdir, s_cwd_ta);
 	va_copy_1024 (newdir, s_cwd_ta);

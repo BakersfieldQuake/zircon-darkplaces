@@ -269,9 +269,9 @@ ifeq ($(WIN64RELEASE), 1)
 #	WINDRES=$(TARGET)-windres
 endif
 
-# Baker old ... CFLAGS_WARNINGS=-Wall -Winline -Werror=c++-compat -Wwrite-strings -Wshadow -Wold-style-definition -Wstrict-prototypes -Wsign-compare -Wdeclaration-after-statement -Wmissing-prototypes
+# Baker old ... CFLAGS_WARNINGS=-Wall -Winline -Wno-c++-compat -Wwrite-strings -Wshadow -Wold-style-definition -Wstrict-prototypes -Wsign-compare -Wdeclaration-after-statement -Wmissing-prototypes
 
-CFLAGS_WARNINGS=-Wall -Winline -Werror=c++-compat -Wwrite-strings -Wshadow -Wsign-compare -Wno-missing-braces -Wno-misleading-indentation -Wno-switch -Wno-parentheses -Wno-unused-but-set-variable -Wno-unused-value -Wno-unused-label -Wno-declaration-after-statement -Wno-missing-prototypes -Wno-discarded-qualifiers -Wno-implicit-function-declaration
+CFLAGS_WARNINGS=-Wall -Winline -Wno-c++-compat -Wwrite-strings -Wshadow -Wsign-compare -Wno-missing-braces -Wno-misleading-indentation -Wno-switch -Wno-parentheses -Wno-unused-but-set-variable -Wno-unused-value -Wno-unused-label -Wno-declaration-after-statement -Wno-missing-prototypes -Wno-discarded-qualifiers -Wno-implicit-function-declaration
 
 
 

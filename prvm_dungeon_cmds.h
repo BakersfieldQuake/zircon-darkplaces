@@ -1,5 +1,6 @@
 // prvm_dungeon_cmds.h
 
+#include "csg_local.h" // Linux build: supplies map_t / map_get / for_each_entity_* macros
 #include "prvm_dungeon_ent_cmds.h"
 #include "prvm_dungeon_cmds_halls.h"
 //#include "prvm_dungeon_cmds.h"

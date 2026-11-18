@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <signal.h>
 
 int cl_available = false;
+int cl_csg_run = false; // Baker Oct 30 2026; defined in vid_sdl.c for client, here for dedicated server build (host.c references it)
 
 qbool vid_supportrefreshrate = false;
 
