@@ -16,9 +16,9 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Keep downloaded .deb and make the archive writable
         run: |
@@ -28,7 +28,7 @@ jobs:
           sudo chown "$(id -un)" /var/cache/apt/archives
 
       - name: Cache apt packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /var/cache/apt/archives/*.deb
           key: linux-apt-${{ hashFiles('.github/workflows/build.yml') }}
@@ -41,7 +41,7 @@ jobs:
           # jpeg/curl/vorbis/d0_blind_id are dlopen'd at runtime, no -dev needed to build.
 
       - name: Restore warm build cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: build-obj
           key: linux-buildobj-${{ github.ref_name }}-${{ github.run_id }}
@@ -50,7 +50,7 @@ jobs:
             linux-buildobj-
 
       - name: Restore failure counter
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci_failcount
           key: linux-failcount-${{ github.run_id }}
@@ -79,19 +79,19 @@ jobs:
 
       - name: Save warm build cache (only after a good build)
         if: success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: build-obj
           key: linux-buildobj-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Save failure counter
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci_failcount
           key: linux-failcount-${{ github.run_id }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zircon-linux-x86_64
           path: |
@@ -105,7 +105,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # setup-msys2 caches the downloaded pacman packages for the `install:` list
       # natively (keyed to this config), so these deps are not re-downloaded each run.
@@ -113,6 +113,9 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          # MINGW64 (msvcrt) kept intentionally: it matches the CRT of the libjpeg/SDL2/
+          # zlib/curl DLLs shipped in the package. UCRT64 would change the runtime ABI.
+          suppress-deprecation-warnings: msystem-mingw64
           update: true
           install: >-
             make
@@ -122,7 +125,7 @@ jobs:
             mingw-w64-x86_64-libjpeg-turbo
 
       - name: Restore warm build cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: build-obj
           key: windows-buildobj-${{ github.ref_name }}-${{ github.run_id }}
@@ -131,7 +134,7 @@ jobs:
             windows-buildobj-
 
       - name: Restore failure counter
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci_failcount
           key: windows-failcount-${{ github.run_id }}
@@ -163,19 +166,19 @@ jobs:
 
       - name: Save warm build cache (only after a good build)
         if: success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: build-obj
           key: windows-buildobj-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Save failure counter
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci_failcount
           key: windows-failcount-${{ github.run_id }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zircon-windows-x86_64
           path: zircon_beta_windows_sdl.exe
