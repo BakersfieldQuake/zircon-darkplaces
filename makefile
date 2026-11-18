@@ -301,7 +301,7 @@ ifeq ($(DP_MAKE_TARGET), mingw)
 
 	DP_LINK_SDL?=shared
 	DP_LINK_ZLIB?=dlopen
-	DP_LINK_JPEG?=shared
+	DP_LINK_JPEG?=dlopen
 	DP_LINK_ODE?=
 	DP_LINK_CRYPTO?=dlopen
 	DP_LINK_CRYPTO_RIJNDAEL?=dlopen
