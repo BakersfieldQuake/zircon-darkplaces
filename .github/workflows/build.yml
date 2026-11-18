@@ -185,3 +185,73 @@ jobs:
           if-no-files-found: error
           # Note: the .exe needs matching runtime DLLs alongside it to actually run
           # (SDL2.dll, libjpeg, zlib1, libcurl, ...).
+
+  macos:
+    runs-on: macos-latest   # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: brew install sdl2 jpeg-turbo
+        # jpeg/curl/vorbis are dlopen'd at runtime; jpeg-turbo provides libjpeg.62.dylib.
+        # The macosx makefile block already links jpeg via dlopen.
+
+      - name: Restore warm build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build-obj
+          key: macos-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            macos-buildobj-${{ github.ref_name }}-
+            macos-buildobj-
+
+      - name: Restore failure counter
+        uses: actions/cache/restore@v6
+        with:
+          path: .ci_failcount
+          key: macos-failcount-${{ github.run_id }}
+          restore-keys: macos-failcount-
+
+      - name: Build (warm)
+        id: warm
+        continue-on-error: true
+        run: make -f makefile -j"$(sysctl -n hw.ncpu)" sdl-release sv-release
+
+      - name: Clean retry (no cache)
+        id: retry
+        if: steps.warm.outcome == 'failure'
+        run: |
+          n=$(cat .ci_failcount 2>/dev/null || echo 0); echo $((n + 1)) > .ci_failcount
+          echo "::warning::Warm build failed; rolling failure count now $(cat .ci_failcount). Retrying clean."
+          echo "Warm build FAILED — clean retry. Rolling failures: $(cat .ci_failcount)" >> "$GITHUB_STEP_SUMMARY"
+          make -f makefile clean || true
+          rm -rf build-obj
+          make -f makefile -j"$(sysctl -n hw.ncpu)" sdl-release sv-release
+
+      - name: Rename to macOS arm64 names
+        run: |
+          mv zircon_beta_linux_sdl zircon_beta_macos_arm64_sdl
+          mv zircon_beta_linux_dedicated_server zircon_beta_macos_arm64_dedicated_server
+          file zircon_beta_macos_arm64_*
+
+      - name: Save warm build cache (only after a good build)
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: build-obj
+          key: macos-buildobj-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save failure counter
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: .ci_failcount
+          key: macos-failcount-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: zircon-macos-arm64
+          path: |
+            zircon_beta_macos_arm64_sdl
+            zircon_beta_macos_arm64_dedicated_server
+          if-no-files-found: error
