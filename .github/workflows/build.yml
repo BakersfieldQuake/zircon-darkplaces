@@ -20,6 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Keep downloaded .deb and make the archive writable
+        run: |
+          echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99keep-debs
+          sudo rm -f /etc/apt/apt.conf.d/docker-clean
+          sudo mkdir -p /var/cache/apt/archives
+          sudo chown "$(id -un)" /var/cache/apt/archives
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives/*.deb
+          key: linux-apt-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: linux-apt-
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -93,6 +107,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # setup-msys2 caches the downloaded pacman packages for the `install:` list
+      # natively (keyed to this config), so these deps are not re-downloaded each run.
       - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
