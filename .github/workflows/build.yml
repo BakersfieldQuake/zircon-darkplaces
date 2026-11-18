@@ -212,10 +212,13 @@ jobs:
           key: macos-failcount-${{ github.run_id }}
           restore-keys: macos-failcount-
 
+      # The macosx makefile block links SDL via `sdl2-config --static-libs`, but Homebrew
+      # SDL2 is a dylib with no static archive, so SDL2 ends up unlinked (undefined
+      # _SDL_* symbols). Override with the dynamic libs.
       - name: Build (warm)
         id: warm
         continue-on-error: true
-        run: make -f makefile -j"$(sysctl -n hw.ncpu)" sdl-release sv-release
+        run: make -f makefile -j"$(sysctl -n hw.ncpu)" SDLCONFIG_STATICLIBS="$(sdl2-config --libs)" sdl-release sv-release
 
       - name: Clean retry (no cache)
         id: retry
@@ -226,7 +229,7 @@ jobs:
           echo "Warm build FAILED — clean retry. Rolling failures: $(cat .ci_failcount)" >> "$GITHUB_STEP_SUMMARY"
           make -f makefile clean || true
           rm -rf build-obj
-          make -f makefile -j"$(sysctl -n hw.ncpu)" sdl-release sv-release
+          make -f makefile -j"$(sysctl -n hw.ncpu)" SDLCONFIG_STATICLIBS="$(sdl2-config --libs)" sdl-release sv-release
 
       - name: Rename to macOS arm64 names
         run: |
