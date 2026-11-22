@@ -283,6 +283,8 @@ static void R_DecalSystem_SplatEntity(entity_render_t *ent, const vec3_t worldor
 	bih_triangles_count = -1;
 	if (!dynamic)
 	{
+		if (!model->render_bih.numleafs && !model->collision_bih.numleafs && model->type == mod_brushq1 && !model->brushq1.render_bih_tried)
+			Mod_Q1BSP_EnsureRenderBIH(model);
 		if (model->render_bih.numleafs)
 			bih = &model->render_bih;
 		else if (model->collision_bih.numleafs)

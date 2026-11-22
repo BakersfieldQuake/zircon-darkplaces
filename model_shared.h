@@ -703,6 +703,7 @@ qbool Mod_AllocLightmap_Block(mod_alloclightmap_state_t *state, int blockwidth, 
 
 // bsp models
 void Mod_BrushInit(void);
+void Mod_Q1BSP_EnsureRenderBIH(model_t *mod);
 // used for talking to the QuakeC mainly
 int Mod_Q1BSP_NativeContentsFromSuperContents(int supercontents);
 int Mod_Q1BSP_SuperContentsFromNativeContents(int nativecontents);

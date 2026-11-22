@@ -336,6 +336,8 @@ cvar_t gl_skyclip = {CF_CLIENT, "gl_skyclip", "4608", "nehahra farclip distance 
 cvar_t r_q1bsp_lightmap_updates_enabled = {CF_CLIENT, "r_q1bsp_lightmap_updates_enabled", "1", "allow lightmaps to be updated on Q1BSP maps (don't turn this off except for debugging)"};
 cvar_t r_q1bsp_lightmap_updates_combine = {CF_CLIENT | CF_ARCHIVE, "r_q1bsp_lightmap_updates_combine", "2", "combine lightmap texture updates to make fewer glTexSubImage2D calls, modes: 0 = immediately upload lightmaps (may be thousands of small 3x3 updates), 1 = combine to one call, 2 = combine to one full texture update (glTexImage2D) which tells the driver it does not need to lock the resource (faster on most drivers)"};
 cvar_t r_q1bsp_lightmap_updates_hidden_surfaces = {CF_CLIENT | CF_ARCHIVE, "r_q1bsp_lightmap_updates_hidden_surfaces", "0", "update lightmaps on surfaces that are not visible, so that updates only occur on frames where lightstyles changed value (animation or light switches), only makes sense with combine = 2"};
+cvar_t r_load_normalmap = {CF_CLIENT | CF_ARCHIVE, "r_load_normalmap", "1", "load _norm/_bump textures: 0 = never, 1 = auto (skip when gloss, offsetmapping, and realtime lights are all 0), 2 = always"};
+cvar_t r_load_gloss = {CF_CLIENT | CF_ARCHIVE, "r_load_gloss", "1", "load _gloss specular textures: 0 = never, 1 = auto (skip when r_shadow_gloss is 0), 2 = always"};
 
 extern cvar_t v_glslgamma_2d;
 
@@ -1326,7 +1328,15 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
 
 	// compile the shader program
 	if (vertstrings_count + geomstrings_count + fragstrings_count) {
+		double t0 = Sys_DirtyTime();
+		Sys_PumpLoadingEvents();
 		p->program = GL_Backend_CompileProgram(vertstrings_count, vertstrings_list, geomstrings_count, geomstrings_list, fragstrings_count, fragstrings_list);
+		Sys_PumpLoadingEvents();
+		{
+			double dt = Sys_DirtyTime() - t0;
+			if (dt >= 5.0 || developer.integer >= 2)
+				Con_PrintLinef ("GLSL compile %s took %.2fs", permutationname, dt);
+		}
 	}
 	if (p->program)
 	{
@@ -2727,13 +2737,23 @@ skinframe_t *R_SkinFrame_LoadExternal_SkinFrame(skinframe_t *skinframe, const ch
 #endif
 	}
 
+	qbool want_normalmap = r_loadnormalmap && r_load_normalmap.integer && (r_load_normalmap.integer >= 2 || r_shadow_gloss.integer != 0 || r_glsl_offsetmapping.integer != 0 || r_glsl_deluxemapping.integer != 0 || r_shadow_realtime_dlight.integer != 0 || r_shadow_realtime_world.integer != 0);
+	qbool want_gloss = r_loadgloss && r_load_gloss.integer && (r_load_gloss.integer >= 2 || r_shadow_gloss.integer != 0);
+
+	// Free basepixels as soon as base/fog/avgcolor are done unless needed for bumpscale_basetexture synthesis
+	if (basepixels && !(want_normalmap && r_shadow_bumpscale_basetexture.value > 0))
+	{
+		Mem_Free(basepixels);
+		basepixels = NULL;
+	}
+
 	if (r_loaddds)
 	{
 		mymiplevel = savemiplevel;
-		if (r_loadnormalmap)
+		if (want_normalmap)
 			skinframe->nmap = R_LoadTextureDDSFile(r_main_texturepool, va(vabuf, sizeof(vabuf), "dds/%s_norm.dds", skinframe->basename), false, (TEXF_ALPHA | textureflags) & (r_mipnormalmaps.integer ? ~0 : ~TEXF_MIPMAP), NULL, NULL, mymiplevel, true);
 		skinframe->glow = R_LoadTextureDDSFile(r_main_texturepool, va(vabuf, sizeof(vabuf), "dds/%s_glow.dds", skinframe->basename), vid.sRGB3D, textureflags, NULL, NULL, mymiplevel, true);
-		if (r_loadgloss)
+		if (want_gloss)
 			skinframe->gloss = R_LoadTextureDDSFile(r_main_texturepool, va(vabuf, sizeof(vabuf), "dds/%s_gloss.dds", skinframe->basename), vid.sRGB3D, textureflags, NULL, NULL, mymiplevel, true);
 		skinframe->pants = R_LoadTextureDDSFile(r_main_texturepool, va(vabuf, sizeof(vabuf), "dds/%s_pants.dds", skinframe->basename), vid.sRGB3D, textureflags, NULL, NULL, mymiplevel, true);
 		skinframe->shirt = R_LoadTextureDDSFile(r_main_texturepool, va(vabuf, sizeof(vabuf), "dds/%s_shirt.dds", skinframe->basename), vid.sRGB3D, textureflags, NULL, NULL, mymiplevel, true);
@@ -2741,7 +2761,7 @@ skinframe_t *R_SkinFrame_LoadExternal_SkinFrame(skinframe_t *skinframe, const ch
 	}
 
 	// _norm is the name used by tenebrae and has been adopted as standard
-	if (r_loadnormalmap && skinframe->nmap == NULL)
+	if (want_normalmap && skinframe->nmap == NULL)
 	{
 		mymiplevel = savemiplevel;
 		if ((pixels = loadimagepixelsbgra(va(vabuf, sizeof(vabuf), "%s_norm", skinframe->basename), q_tx_complain_false, q_tx_allowfixtrans_false, q_tx_convertsrgb_false, &mymiplevel)) != NULL)
@@ -2758,17 +2778,23 @@ skinframe_t *R_SkinFrame_LoadExternal_SkinFrame(skinframe_t *skinframe, const ch
 			Mem_Free(pixels);
 			Mem_Free(bumppixels);
 		}
-		else if (r_shadow_bumpscale_basetexture.value > 0)
+		else if (basepixels && r_shadow_bumpscale_basetexture.value > 0)
 		{
 			pixels = (unsigned char *)Mem_Alloc(tempmempool, basepixels_width * basepixels_height * 4);
 			Image_HeightmapToNormalmap_BGRA(basepixels, pixels, basepixels_width, basepixels_height, false, r_shadow_bumpscale_basetexture.value);
-			skinframe->nmap = R_LoadTexture2D (r_main_texturepool, va(vabuf, sizeof(vabuf), "%s_nmap", skinframe->basename), basepixels_width, basepixels_height, pixels, TEXTYPE_BGRA, (TEXF_ALPHA | textureflags) & (r_mipnormalmaps.integer ? ~0 : ~TEXF_MIPMAP) & (gl_texturecompression_normal.integer && gl_texturecompression.integer ? ~0 : ~TEXF_COMPRESS), mymiplevel, NULL);
+			skinframe->nmap = R_LoadTexture2D (r_main_texturepool, va(vabuf, sizeof(vabuf), "%s_nmap", skinframe->basename), basepixels_width, basepixels_height, pixels, TEXTYPE_BGRA, (TEXF_ALPHA | textureflags) & (r_mipnormalmaps.integer ? ~0 : ~TEXF_MIPMAP) & (gl_texturecompression_normal.integer && gl_texturecompression.integer ? ~0 : ~TEXF_COMPRESS), miplevel, NULL);
 			Mem_Free(pixels);
 		}
 #ifndef USE_GLES2
 		if (r_savedds && skinframe->nmap)
 			R_SaveTextureDDSFile(skinframe->nmap, va(vabuf, sizeof(vabuf), "dds/%s_norm.dds", skinframe->basename), r_texture_dds_save.integer < 2, true);
 #endif
+	}
+
+	if (basepixels)
+	{
+		Mem_Free(basepixels);
+		basepixels = NULL;
 	}
 
 	// _luma is supported only for tenebrae compatibility
@@ -2789,7 +2815,7 @@ skinframe_t *R_SkinFrame_LoadExternal_SkinFrame(skinframe_t *skinframe, const ch
 	}
 
 	mymiplevel = savemiplevel;
-	if (skinframe->gloss == NULL && r_loadgloss && (pixels = loadimagepixelsbgra(va(vabuf, sizeof(vabuf), "%s_gloss", skinframe->basename), q_tx_complain_false, q_tx_allowfixtrans_false, q_tx_convertsrgb_false, &mymiplevel))) {
+	if (skinframe->gloss == NULL && want_gloss && (pixels = loadimagepixelsbgra(va(vabuf, sizeof(vabuf), "%s_gloss", skinframe->basename), q_tx_complain_false, q_tx_allowfixtrans_false, q_tx_convertsrgb_false, &mymiplevel))) {
 		skinframe->gloss = R_LoadTexture2D (r_main_texturepool, va(vabuf, sizeof(vabuf), "%s_gloss", skinframe->basename), image_width, image_height, pixels, vid.sRGB3D ? TEXTYPE_SRGB_BGRA : TEXTYPE_BGRA, (TEXF_ALPHA | textureflags) & (gl_texturecompression_gloss.integer && gl_texturecompression.integer ? ~0 : ~TEXF_COMPRESS), mymiplevel, NULL);
 #ifndef USE_GLES2
 		if (r_savedds && skinframe->gloss) {
@@ -10610,6 +10636,8 @@ void GL_Main_Init(void)
 	Cvar_RegisterVariable(&r_q1bsp_lightmap_updates_enabled);
 	Cvar_RegisterVariable(&r_q1bsp_lightmap_updates_combine);
 	Cvar_RegisterVariable(&r_q1bsp_lightmap_updates_hidden_surfaces);
+	Cvar_RegisterVariable(&r_load_normalmap);
+	Cvar_RegisterVariable(&r_load_gloss);
 	if (gamemode == GAME_NEHAHRA || gamemode == GAME_TENEBRAE)
 		Cvar_SetValue(&cvars_all, "r_fullbrights", 0);
 #ifdef DP_MOBILETOUCH

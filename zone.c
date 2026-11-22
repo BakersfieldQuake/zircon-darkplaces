@@ -156,19 +156,24 @@ void Mem_PrintList(size_t minallocationsize, ccs *mempool_name_wanted);
 	#ifndef _WIN32
 		return malloc(size);
 	#else
-		void *base;
-		// try for half a second or so
+		void *base = (void *)malloc(size);
+		if (base)
+			return base;
+		// Cap total retry wall-clock wait to 500 ms (Sleep(1) rounds up to the 15.6 ms timer tick, so 500 blind sleeps took ~7.8 s)
+		double deadline = Sys_DirtyTime() + 0.5;
 		unsigned int attempts = 500;
 		while (attempts--)
 		{
+			Sys_Sleep(1000);
 			base = (void *)malloc(size);
 			if (base)
 				return base;
-			Sys_Sleep(1000);
+			if (Sys_DirtyTime() >= deadline)
+				break;
 		}
 		return NULL;
 	#endif
-}
+	}
 #endif // #if MEMCLUMPING != 2
 
 #if MEMCLUMPING
@@ -413,11 +418,21 @@ void *_Mem_Alloc(mempool_t *pool, void *olddata, size_t size, size_t alignment, 
 	base = (unsigned char *)Clump_AllocBlock(realsize);
 
 	if (base == NULL) {
-		Mem_PrintList(0, MEM_DETAIL_0);
-		Mem_PrintStats();
-		Mem_PrintList(1<<30, MEM_DETAIL_0);
-		Mem_PrintStats();
-		Sys_Error ("Mem_Alloc: out of memory (alloc of size %f (%.3fMB) at %s:%d)", (double)realsize, (double)realsize / (1 << 20), filename, fileline);
+		static qbool mem_oom_inprogress = false;
+		pool->totalsize -= size;
+		pool->realsize -= realsize;
+		if (mem_mutex)
+			Thread_UnlockMutex(mem_mutex);
+		if (!mem_oom_inprogress) {
+			mem_oom_inprogress = true;
+			Mem_PrintList(0, MEM_DETAIL_0);
+			Mem_PrintStats();
+			Mem_PrintList(1<<30, MEM_DETAIL_0);
+			Mem_PrintStats();
+		}
+		Sys_Error ("Mem_Alloc: out of memory (alloc of size %f (%.3fMB) at %s:%d).\nClose background apps (such as browser tabs), try Low-Memory or Safe Mode, or run 'Report a Problem'.\nLog file: %s",
+			(double)realsize, (double)realsize / (1 << 20), filename, fileline,
+			crt_log_file[0] ? crt_log_file : "(none)");
 	}
 	// calculate address that aligns the end of the memheader_t to the specified alignment
 	mem = (memheader_t*)((((size_t)base + sizeof(memheader_t) + (alignment-1)) & ~(alignment-1)) - sizeof(memheader_t));

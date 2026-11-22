@@ -1823,6 +1823,7 @@ void SCR_PushLoadingScreen (const char *msg, float len_in_parent)
 		s->absolute_loading_amount_len = 1;
 	}
 
+	Sys_PumpLoadingEvents();
 	if (scr_loading_ex)
 		CL_UpdateScreen();
 }
@@ -1846,6 +1847,7 @@ void SCR_PopLoadingScreen (qbool redraw)
 	}
 	Z_Free(s);
 
+	Sys_PumpLoadingEvents();
 	if (scr_loading_ex && redraw)
 		CL_UpdateScreen();
 }
@@ -1854,6 +1856,17 @@ void SCR_ClearLoadingScreen (qbool redraw)
 {
 	while(loadingscreenstack)
 		SCR_PopLoadingScreen(redraw && !loadingscreenstack->prev);
+}
+
+void SCR_UpdateLoadingScreenMsg (const char *msg)
+{
+	Sys_PumpLoadingEvents();
+	if (!loadingscreenstack)
+		return;
+	if (msg)
+		c_strlcpy(loadingscreenstack->msg, msg);
+	if (scr_loading_ex)
+		CL_UpdateScreen();
 }
 
 static float SCR_DrawLoadingStack_r(loadingscreenstack_t *s, float y, float size)

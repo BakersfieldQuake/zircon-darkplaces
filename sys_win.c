@@ -71,6 +71,7 @@ void Sys_Error (const char *error, ...)
 	va_end (argptr);
 
 	Con_PrintLinef (CON_ERROR "Engine Error: %s", text);
+	Log_Close ();
 
 	// close video so the message box is visible, unless we already tried that
 	if (!in_sys_error0) 

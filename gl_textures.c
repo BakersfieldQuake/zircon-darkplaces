@@ -35,6 +35,7 @@ cvar_t r_picmipworld = {CF_CLIENT | CF_ARCHIVE, "r_picmipworld", "1", "whether g
 cvar_t gl_picmip_sprites = {CF_CLIENT | CF_ARCHIVE, "gl_picmip_sprites", "0", "extra picmip level for sprite textures (may be negative, which will then reduce gl_picmip for these)"};
 cvar_t r_picmipsprites = {CF_CLIENT | CF_ARCHIVE, "r_picmipsprites", "1", "make gl_picmip affect sprites too (saves some graphics memory in sprite heavy games) (setting this to 0 is a shorthand for gl_picmip_sprites -9999999)"};
 cvar_t gl_picmip_other = {CF_CLIENT | CF_ARCHIVE, "gl_picmip_other", "0", "extra picmip level for other textures (may be negative, which will then reduce gl_picmip for these)"};
+cvar_t gl_picmip_force = {CF_CLIENT | CF_ARCHIVE, "gl_picmip_force", "0", "when 1, ignore nopicmip on 3D world/model shaders and also apply picmip/gl_max_size to skyboxes (never affects 2D HUD, fonts, lightmaps, or render targets)"};
 cvar_t r_lerpimages = {CF_CLIENT | CF_ARCHIVE, "r_lerpimages", "1", "bilinear filters images when scaling them up to power of 2 size (mode 1), looks better than glquake (mode 0)"};
 cvar_t gl_texture_anisotropy = {CF_CLIENT | CF_ARCHIVE, "gl_texture_anisotropy", "1", "anisotropic filtering quality (if supported by hardware), 1 sample (no anisotropy) and 8 sample (8 tap anisotropy) are recommended values"};
 cvar_t gl_texturecompression = {CF_CLIENT | CF_ARCHIVE, "gl_texturecompression", "0", "whether to compress textures, a value of 0 disables compression (even if the individual cvars are 1), 1 enables fast (low quality) compression at startup, 2 enables slow (high quality) compression at startup"};
@@ -252,8 +253,8 @@ gltexturepool_t;
 
 static gltexturepool_t *gltexturepoolchain = NULL;
 
-static unsigned char *resizebuffer = NULL, *colorconvertbuffer;
-static int resizebuffersize = 0;
+static unsigned char *resizebuffer = NULL, *colorconvertbuffer = NULL;
+static int resizebuffersize = 0, colorconvertbuffersize = 0;
 static const unsigned char *texturebuffer;
 
 static textypeinfo_t *R_GetTexTypeInfo(textype_t textype, int flags)
@@ -830,6 +831,7 @@ static void r_textures_shutdown(void)
 	}
 
 	resizebuffersize = 0;
+	colorconvertbuffersize = 0;
 	resizebuffer = NULL;
 	colorconvertbuffer = NULL;
 	texturebuffer = NULL;
@@ -883,6 +885,7 @@ void R_Textures_Init (void)
 	Cvar_RegisterVariable (&gl_picmip_sprites);
 	Cvar_RegisterVariable (&r_picmipsprites);
 	Cvar_RegisterVariable (&gl_picmip_other);
+	Cvar_RegisterVariable (&gl_picmip_force);
 	Cvar_RegisterVariable (&gl_max_lightmapsize);
 	Cvar_RegisterVariable (&r_lerpimages);
 	Cvar_RegisterVariable (&gl_texture_anisotropy);
@@ -917,6 +920,7 @@ void R_Textures_Frame (void)
 
 	// free the resize buffers
 	resizebuffersize = 0;
+	colorconvertbuffersize = 0;
 	if (resizebuffer)
 	{
 		Mem_Free(resizebuffer);
@@ -979,12 +983,39 @@ static void R_MakeResizeBufferBigger(int size)
 		resizebuffersize = size;
 		if (resizebuffer)
 			Mem_Free(resizebuffer);
+		resizebuffer = (unsigned char *)Mem_Alloc(texturemempool, resizebuffersize);
+		if (!resizebuffer)
+			Host_Error_Line ("R_Upload: out of memory");
+	}
+}
+
+static void R_MakeColorConvertBufferBigger(int size)
+{
+	if (colorconvertbuffersize < size)
+	{
+		colorconvertbuffersize = size;
 		if (colorconvertbuffer)
 			Mem_Free(colorconvertbuffer);
-		resizebuffer = (unsigned char *)Mem_Alloc(texturemempool, resizebuffersize);
-		colorconvertbuffer = (unsigned char *)Mem_Alloc(texturemempool, resizebuffersize);
-		if (!resizebuffer || !colorconvertbuffer)
+		colorconvertbuffer = (unsigned char *)Mem_Alloc(texturemempool, colorconvertbuffersize);
+		if (!colorconvertbuffer)
 			Host_Error_Line ("R_Upload: out of memory");
+	}
+}
+
+static void R_ReleaseLargeUploadBuffers(void)
+{
+	// Release >4 MB staging buffers immediately after upload instead of holding them until the first rendered frame
+	if (resizebuffersize > 4 * 1024 * 1024 && resizebuffer)
+	{
+		Mem_Free(resizebuffer);
+		resizebuffer = NULL;
+		resizebuffersize = 0;
+	}
+	if (colorconvertbuffersize > 4 * 1024 * 1024 && colorconvertbuffer)
+	{
+		Mem_Free(colorconvertbuffer);
+		colorconvertbuffer = NULL;
+		colorconvertbuffersize = 0;
 	}
 }
 
@@ -1154,7 +1185,7 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 		if (glt->textype->textype == TEXTYPE_PALETTE)
 		{
 			// promote paletted to BGRA, so we only have to worry about BGRA in the rest of this code
-			R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+			R_MakeColorConvertBufferBigger(glt->inputwidth * glt->inputheight * glt->inputdepth * glt->sides * glt->bytesperpixel);
 			Image_Copy8bitBGRA(prevbuffer, colorconvertbuffer, glt->inputwidth * glt->inputheight * glt->inputdepth * glt->sides, glt->palette);
 			prevbuffer = colorconvertbuffer;
 		}
@@ -1162,7 +1193,7 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 		{
 			// multiply RGB channels by A channel before uploading
 			int alpha;
-			R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+			R_MakeColorConvertBufferBigger(glt->inputwidth * glt->inputheight * glt->inputdepth * glt->sides * glt->bytesperpixel);
 			for (i = 0;i < glt->inputwidth*glt->inputheight*glt->inputdepth*4;i += 4)
 			{
 				alpha = prevbuffer[i+3];
@@ -1183,7 +1214,10 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 		// apply mipmap reduction algorithm to get down to picmip/max_size
 		while (width > glt->tilewidth || height > glt->tileheight || depth > glt->tiledepth)
 		{
-			R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+			int nextw = width > glt->tilewidth ? (width >> 1) : width;
+			int nexth = height > glt->tileheight ? (height >> 1) : height;
+			int nextd = depth > glt->tiledepth ? (depth >> 1) : depth;
+			R_MakeResizeBufferBigger(nextw * nexth * nextd * glt->sides * glt->bytesperpixel);
 			Image_MipReduce32(prevbuffer, resizebuffer, &width, &height, &depth, glt->tilewidth, glt->tileheight, glt->tiledepth);
 			prevbuffer = resizebuffer;
 		}
@@ -1218,7 +1252,10 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 				{
 					while (width > 1 || height > 1 || depth > 1)
 					{
-						R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+						int nextw = width > 1 ? (width >> 1) : 1;
+						int nexth = height > 1 ? (height >> 1) : 1;
+						int nextd = depth > 1 ? (depth >> 1) : 1;
+						R_MakeResizeBufferBigger(nextw * nexth * nextd * glt->sides * glt->bytesperpixel);
 						Image_MipReduce32(prevbuffer, resizebuffer, &width, &height, &depth, 1, 1, 1);
 						prevbuffer = resizebuffer;
 						/*2D mip*/ qglTexImage2D(GL_TEXTURE_2D, mip++, glt->glinternalformat, width, height, 0, glt->glformat, glt->gltype, prevbuffer);CHECKGLERROR
@@ -1232,7 +1269,10 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 				{
 					while (width > 1 || height > 1 || depth > 1)
 					{
-						R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+						int nextw = width > 1 ? (width >> 1) : 1;
+						int nexth = height > 1 ? (height >> 1) : 1;
+						int nextd = depth > 1 ? (depth >> 1) : 1;
+						R_MakeResizeBufferBigger(nextw * nexth * nextd * glt->sides * glt->bytesperpixel);
 						Image_MipReduce32(prevbuffer, resizebuffer, &width, &height, &depth, 1, 1, 1);
 						prevbuffer = resizebuffer;
 						qglTexImage3D(GL_TEXTURE_3D, mip++, glt->glinternalformat, width, height, depth, 0, glt->glformat, glt->gltype, prevbuffer);CHECKGLERROR
@@ -1257,7 +1297,10 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 					// picmip/max_size
 					while (width > glt->tilewidth || height > glt->tileheight || depth > glt->tiledepth)
 					{
-						R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+						int nextw = width > glt->tilewidth ? (width >> 1) : width;
+						int nexth = height > glt->tileheight ? (height >> 1) : height;
+						int nextd = depth > glt->tiledepth ? (depth >> 1) : depth;
+						R_MakeResizeBufferBigger(nextw * nexth * nextd * glt->sides * glt->bytesperpixel);
 						Image_MipReduce32(prevbuffer, resizebuffer, &width, &height, &depth, glt->tilewidth, glt->tileheight, glt->tiledepth);
 						prevbuffer = resizebuffer;
 					}
@@ -1267,7 +1310,10 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 					{
 						while (width > 1 || height > 1 || depth > 1)
 						{
-							R_MakeResizeBufferBigger(width * height * depth * glt->sides * glt->bytesperpixel);
+							int nextw = width > 1 ? (width >> 1) : 1;
+							int nexth = height > 1 ? (height >> 1) : 1;
+							int nextd = depth > 1 ? (depth >> 1) : 1;
+							R_MakeResizeBufferBigger(nextw * nexth * nextd * glt->sides * glt->bytesperpixel);
 							Image_MipReduce32(prevbuffer, resizebuffer, &width, &height, &depth, 1, 1, 1);
 							prevbuffer = resizebuffer;
 							qglTexImage2D(cubemapside[i], mip++, glt->glinternalformat, width, height, 0, glt->glformat, glt->gltype, prevbuffer);CHECKGLERROR
@@ -1282,6 +1328,8 @@ static void R_UploadFullTexture(gltexture_t *glt, const unsigned char *data)
 		}
 		break;
 	} // switch
+
+	R_ReleaseLargeUploadBuffers();
 }
 
 CALLERS_		(R_LoadTexture2D)

@@ -273,6 +273,8 @@ void Sys_Sleep(int microseconds);
 
 /// Perform Key_Event () callbacks until the input que is empty
 void Sys_SendKeyEvents (void);
+/// Pump OS window messages during long synchronous loads to prevent Windows "Not Responding" hangs
+void Sys_PumpLoadingEvents (void);
 
 
 extern qbool sys_supportsdlgetticks;

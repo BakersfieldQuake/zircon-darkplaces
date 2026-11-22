@@ -38,6 +38,7 @@ void SCR_EndLoadingPlaque (void);
 void SCR_PushLoadingScreen (const char *msg, float len_in_parent);
 void SCR_PopLoadingScreen (qbool redraw);
 void SCR_ClearLoadingScreen (qbool redraw);
+void SCR_UpdateLoadingScreenMsg (const char *msg);
 
 void SCR_CaptureVideo_SoundFrame(const struct portable_samplepair_s *paintbuffer, size_t length);
 

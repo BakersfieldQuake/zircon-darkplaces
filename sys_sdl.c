@@ -77,6 +77,8 @@ void Sys_Error (const char *error, ...) // Baker: This is really SysErrorLinef
 	va_end (argptr);
 
 	Con_PrintLinef (CON_ERROR "Engine Error: %s", text);
+	// Flush and close log file before showing a modal dialog or exiting so crash/OOM details are preserved on disk
+	Log_Close ();
 
 	if (!nocrashdialog)
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Engine Error", text, NULL);

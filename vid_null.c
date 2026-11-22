@@ -83,6 +83,10 @@ void Sys_SendKeyEvents(void)
 {
 }
 
+void Sys_PumpLoadingEvents(void)
+{
+}
+
 void VID_BuildJoyState(vid_joystate_t *joystate)
 {
 }

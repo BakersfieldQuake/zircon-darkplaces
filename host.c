@@ -1194,9 +1194,10 @@ static void Host_InitOnce (void)
 
 	host.state = host_active;
 
-	CL_StartVideo();
-
+	// Start logging before CL_StartVideo() so OpenGL/SDL initialization failures are captured in the log file
 	Log_Start();
+
+	CL_StartVideo();
 
 	// October 30 2026
 	if (cl_csg_run) {

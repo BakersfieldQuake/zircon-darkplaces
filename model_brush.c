@@ -64,6 +64,11 @@ cvar_t mod_q2bsp_littransparentsurfaces = {CF_CLIENT, "mod_q2bsp_littransparents
 
 cvar_t mod_q1bsp_polygoncollisions = {CF_CLIENT | CF_SERVER, "mod_q1bsp_polygoncollisions", "0", "disables use of precomputed cliphulls and instead collides with polygons (uses Bounding Interval Hierarchy optimizations)"};
 cvar_t mod_q1bsp_zero_hullsize_cutoff = {CF_CLIENT | CF_SERVER, "mod_q1bsp_zero_hullsize_cutoff", "3", "bboxes with an X dimension smaller than this will use the smallest cliphull (0x0x0) instead of being rounded up to the player cliphull (32x32x56) in Q1BSP, or crouching player (32x32x36) in HLBSP"};
+cvar_t mod_q1bsp_pvs_ondemand = {CF_CLIENT | CF_SERVER, "mod_q1bsp_pvs_ondemand", "1", "decompress Q1BSP PVS rows on demand using a small LRU cache instead of pre-expanding all clusters (0 = always pre-expand, 1 = on-demand when uncompressed PVS > 16 MB, 2 = always on-demand)"};
+cvar_t mod_q1bsp_lazy_render_bih = {CF_CLIENT | CF_SERVER, "mod_q1bsp_lazy_render_bih", "0", "defer building Q1BSP render_bih until first realtime-light or decal BIH query when realtime lighting and polygon collisions are disabled"};
+
+extern cvar_t sv_threaded;
+static void *mod_pvscache_mutex = NULL;
 
 RELATED_ (r_useportalculling)
 cvar_t mod_bsp_portalize = {CF_CLIENT, "mod_bsp_portalize", "1", "enables portal generation from BSP tree (may take several seconds per map), used by r_drawportals, r_useportalculling, r_shadow_realtime_dlight_portalculling, r_shadow_realtime_world_compileportalculling, Baker: set to 2 to always generate this data [Zircon]"}; // Baker r0100
@@ -1546,15 +1551,16 @@ static void Mod_Q1BSP_TraceLineAgainstSurfaces(struct model_s *model, const fram
 	VectorMA(rhc.start, rhc.trace->fraction, rhc.dist, rhc.trace->endpos);
 }
 
-static void Mod_BSP_DecompressVis(const unsigned char *in, const unsigned char *inend, unsigned char *out, unsigned char *outend)
+static void Mod_BSP_DecompressVisEx(const char *modelname, const unsigned char *in, const unsigned char *inend, unsigned char *out, unsigned char *outend)
 {
 	int c;
+	const char *name = modelname ? modelname : "<unknown>";
 
 	unsigned char *outstart = out;
 	while (out < outend)
 	{
 		if (in == inend) {
-			Con_PrintLinef ("Mod_BSP_DecompressVis: input underrun on model " QUOTED_S " (decompressed %d of %d output bytes)", loadmodel->model_name, (int)(out - outstart), (int)(outend - outstart));
+			Con_PrintLinef ("Mod_BSP_DecompressVis: input underrun on model " QUOTED_S " (decompressed %d of %d output bytes)", name, (int)(out - outstart), (int)(outend - outstart));
 			return;
 		}
 		c = *in++;
@@ -1563,18 +1569,152 @@ static void Mod_BSP_DecompressVis(const unsigned char *in, const unsigned char *
 		else
 		{
 			if (in == inend) {
-				Con_PrintLinef ("Mod_BSP_DecompressVis: input underrun (during zero-run) on model " QUOTED_S " (decompressed %d of %d output bytes)", loadmodel->model_name, (int)(out - outstart), (int)(outend - outstart));
+				Con_PrintLinef ("Mod_BSP_DecompressVis: input underrun (during zero-run) on model " QUOTED_S " (decompressed %d of %d output bytes)", name, (int)(out - outstart), (int)(outend - outstart));
 				return;
 			}
 			for (c = *in++;c > 0;c--) {
 				if (out == outend) {
-					Con_PrintLinef ("Mod_BSP_DecompressVis: output overrun on model " QUOTED_S " (decompressed %d of %d output bytes)", loadmodel->model_name, (int)(out - outstart), (int)(outend - outstart));
+					Con_PrintLinef ("Mod_BSP_DecompressVis: output overrun on model " QUOTED_S " (decompressed %d of %d output bytes)", name, (int)(out - outstart), (int)(outend - outstart));
 					return;
 				}
 				*out++ = 0;
 			}
 		}
 	}
+}
+
+static void Mod_BSP_DecompressVis(const unsigned char *in, const unsigned char *inend, unsigned char *out, unsigned char *outend)
+{
+	Mod_BSP_DecompressVisEx(loadmodel ? loadmodel->model_name : "<unknown>", in, inend, out, outend);
+}
+
+#define MOD_PVSCACHE_SETS 32
+#define MOD_PVSCACHE_WAYS 4
+#define MOD_PVSCACHE_SLOTS (MOD_PVSCACHE_SETS * MOD_PVSCACHE_WAYS)
+
+typedef struct mod_pvscache_s
+{
+	int rowbytes;
+	int clusters[MOD_PVSCACHE_SLOTS];
+	unsigned int stamp[MOD_PVSCACHE_SLOTS];
+	unsigned int clock;
+	unsigned char *allvis;
+	unsigned char *rows;
+}
+mod_pvscache_t;
+
+static unsigned char *Mod_Q1BSP_GetCachedPVSRowLocked(model_t *model, int clusterindex)
+{
+	mod_pvscache_t *cache = model->brushq1.pvscache;
+	int visofs, set, base, way, victim, i;
+	unsigned int beststamp;
+	unsigned char *row;
+
+	if (!cache || !model->brushq1.data_cluster_visofs)
+		return NULL;
+
+	visofs = model->brushq1.data_cluster_visofs[clusterindex];
+	if (visofs < 0 || !model->brushq1.data_compressedpvs || visofs >= model->brushq1.num_compressedpvs)
+		return cache->allvis;
+
+	set = clusterindex & (MOD_PVSCACHE_SETS - 1);
+	base = set * MOD_PVSCACHE_WAYS;
+	cache->clock++;
+	if (cache->clock == 0)
+	{
+		memset(cache->stamp, 0, sizeof(cache->stamp));
+		cache->clock = 1;
+	}
+
+	for (i = 0; i < MOD_PVSCACHE_WAYS; i++)
+	{
+		way = base + i;
+		if (cache->clusters[way] == clusterindex)
+		{
+			cache->stamp[way] = cache->clock;
+			return cache->rows + (size_t)way * (size_t)cache->rowbytes;
+		}
+	}
+
+	victim = base;
+	beststamp = cache->stamp[base];
+	for (i = 1; i < MOD_PVSCACHE_WAYS; i++)
+	{
+		way = base + i;
+		if (cache->clusters[way] < 0)
+		{
+			victim = way;
+			break;
+		}
+		if (cache->stamp[way] < beststamp)
+		{
+			beststamp = cache->stamp[way];
+			victim = way;
+		}
+	}
+
+	cache->clusters[victim] = clusterindex;
+	cache->stamp[victim] = cache->clock;
+	row = cache->rows + (size_t)victim * (size_t)cache->rowbytes;
+	memset(row, 0xFF, (size_t)cache->rowbytes);
+	Mod_BSP_DecompressVisEx(
+		model->model_name,
+		model->brushq1.data_compressedpvs + visofs,
+		model->brushq1.data_compressedpvs + model->brushq1.num_compressedpvs,
+		row,
+		row + cache->rowbytes
+	);
+	return row;
+}
+
+static unsigned char *Mod_Q1BSP_GetCachedPVSRow(model_t *model, int clusterindex)
+{
+	unsigned char *row;
+	if (svs.threaded && mod_pvscache_mutex)
+		Thread_LockMutex(mod_pvscache_mutex);
+	row = Mod_Q1BSP_GetCachedPVSRowLocked(model, clusterindex);
+	if (svs.threaded && mod_pvscache_mutex)
+		Thread_UnlockMutex(mod_pvscache_mutex);
+	return row;
+}
+
+static void Mod_BSP_OrClusterPVS(model_t *model, int clusterindex, unsigned char *pvsbuffer, int pvsbytes)
+{
+	int i;
+	unsigned char *pvs;
+	if (clusterindex < 0 || clusterindex >= model->brush.num_pvsclusters)
+		return;
+	if (model->brush.data_pvsclustersx)
+	{
+		pvs = model->brush.data_pvsclustersx + (size_t)clusterindex * (size_t)model->brush.num_pvsclusterbytes;
+		for (i = 0; i < pvsbytes; i++)
+			pvsbuffer[i] |= pvs[i];
+		return;
+	}
+	if (model->brushq1.pvscache)
+	{
+		if (svs.threaded && mod_pvscache_mutex)
+			Thread_LockMutex(mod_pvscache_mutex);
+		pvs = Mod_Q1BSP_GetCachedPVSRowLocked(model, clusterindex);
+		if (pvs)
+		{
+			for (i = 0; i < pvsbytes; i++)
+				pvsbuffer[i] |= pvs[i];
+		}
+		if (svs.threaded && mod_pvscache_mutex)
+			Thread_UnlockMutex(mod_pvscache_mutex);
+	}
+}
+
+static unsigned char *Mod_BSP_GetClusterPVS(model_t *model, int clusterindex)
+{
+	if (clusterindex < 0 || clusterindex >= model->brush.num_pvsclusters)
+		return NULL;
+	if (model->brush.data_pvsclustersx)
+		return model->brush.data_pvsclustersx + (size_t)clusterindex * (size_t)model->brush.num_pvsclusterbytes;
+	if (model->brushq1.pvscache)
+		return Mod_Q1BSP_GetCachedPVSRow(model, clusterindex);
+	return NULL;
 }
 
 /*
@@ -1788,7 +1928,20 @@ static void Mod_Q1BSP_LoadTextures(sizebuf_t *sb)
 	FS_StripExtension (s, mapname, sizeof(mapname));
 
 	// LadyHavoc: mostly rewritten map texture loader
+	double last_tex_ui = Sys_DirtyTime();
 	for (i = 0; i < nummiptex; i++) {
+		Sys_PumpLoadingEvents();
+		if (cls.state != ca_dedicated && nummiptex > 16)
+		{
+			double now_t = Sys_DirtyTime();
+			if (now_t - last_tex_ui >= 0.25)
+			{
+				char msg[MAX_QPATH_128];
+				last_tex_ui = now_t;
+				dpsnprintf(msg, sizeof(msg), "Loading textures (%d/%d)...", i + 1, nummiptex);
+				SCR_UpdateLoadingScreenMsg(msg);
+			}
+		}
 		doffset = MSG_ReadLittleLong(sb);
 		if (r_nosurftextures.integer)
 			continue;
@@ -2689,6 +2842,8 @@ static void Mod_Q1BSP_LoadFaces(sizebuf_t *sb)
 	totaltris = 0;
 	for (surfacenum = 0, surface = loadmodel->data_surfaces;surfacenum < count;surfacenum++, surface++)
 	{
+		if ((surfacenum & 4095) == 0)
+			Sys_PumpLoadingEvents();
 		surface->lightmapinfo = loadmodel->data_surfaces_lightmapinfo + surfacenum;
 		// the struct on disk is the same in BSP29 (Q1), BSP30 (HL1), and IBSP38 (Q2)
 		planenum = loadmodel->brush.isbsp2 ? MSG_ReadLittleLong(sb) : (unsigned short)MSG_ReadLittleShort(sb);
@@ -2851,6 +3006,9 @@ static void Mod_Q1BSP_LoadFaces(sizebuf_t *sb)
 		for (surfacenum = 0, surface = loadmodel->data_surfaces;surfacenum < count;surfacenum++, surface++) {
 			int iu, iv, lightmapx = 0, lightmapy = 0;
 			float u, v, ubase, vbase, uscale, vscale;
+
+			if ((surfacenum & 4095) == 0)
+				Sys_PumpLoadingEvents();
 
 			if (!loadmodel->brushq1.lightmapupdateflags[surfacenum])
 				continue;
@@ -3082,36 +3240,50 @@ static void Mod_Q1BSP_LoadLeafs(sizebuf_t *sb)
 	// get visleafs from the submodel data
 	loadmodel->brush.num_pvsclusters = loadmodel->brushq1.submodels[0].visleafs;
 	loadmodel->brush.num_pvsclusterbytes = (loadmodel->brush.num_pvsclusters+7)>>3; // Baker: div 8 after rounding up to nearest 8
-	// Jan 4 2026 related to Jun 2 2024
-#if 1
-	// Baker: size_t is unsigned integer
 	size_t pvs_alloc_size = (size_t)loadmodel->brush.num_pvsclusters * (size_t)loadmodel->brush.num_pvsclusterbytes;
-	loadmodel->brush.data_pvsclustersx = (byte *)Mem_Alloc(
-		loadmodel->mempool,
-		pvs_alloc_size /*loadmodel->brush.num_pvsclusters * loadmodel->brush.num_pvsclusterbytes*/
-	);
-
-#else
-	loadmodel->brush.data_pvsclusters = (byte *)Mem_Alloc(
-		loadmodel->mempool,
-		loadmodel->brush.num_pvsclusters * loadmodel->brush.num_pvsclusterbytes
-	);
-#endif
-#if 1
-	memset(
-		loadmodel->brush.data_pvsclustersx,
-		0xFF,
-		pvs_alloc_size
-	);
-#else
-	memset(
-		loadmodel->brush.data_pvsclusters,
-		0xFF, loadmodel->brush.num_pvsclusters * loadmodel->brush.num_pvsclusterbytes);
-#endif
+	qbool use_ondemand_pvs = !svs.threaded && !sv_threaded.integer &&
+		(loadmodel->brush.num_pvsclusters > 0 && loadmodel->brush.num_pvsclusterbytes > 0) &&
+		(mod_q1bsp_pvs_ondemand.integer >= 2 || (mod_q1bsp_pvs_ondemand.integer == 1 && pvs_alloc_size > (size_t)16 * 1024 * 1024));
+	loadmodel->brush.data_pvsclustersx = NULL;
+	loadmodel->brushq1.data_cluster_visofs = NULL;
+	loadmodel->brushq1.pvscache = NULL;
+	if (use_ondemand_pvs)
+	{
+		mod_pvscache_t *pvscache = (mod_pvscache_t *)Mem_Alloc(loadmodel->mempool, sizeof(mod_pvscache_t));
+		loadmodel->brushq1.data_cluster_visofs = (int *)Mem_Alloc(loadmodel->mempool, (size_t)loadmodel->brush.num_pvsclusters * sizeof(int));
+		for (j = 0; j < loadmodel->brush.num_pvsclusters; j++)
+			loadmodel->brushq1.data_cluster_visofs[j] = -1;
+		pvscache->rowbytes = loadmodel->brush.num_pvsclusterbytes;
+		for (j = 0; j < MOD_PVSCACHE_SLOTS; j++)
+			pvscache->clusters[j] = -1;
+		pvscache->allvis = (unsigned char *)Mem_Alloc(loadmodel->mempool, (size_t)pvscache->rowbytes);
+		memset(pvscache->allvis, 0xFF, (size_t)pvscache->rowbytes);
+		pvscache->rows = (unsigned char *)Mem_Alloc(loadmodel->mempool, (size_t)MOD_PVSCACHE_SLOTS * (size_t)pvscache->rowbytes);
+		loadmodel->brushq1.pvscache = pvscache;
+		Con_DPrintLinef ("Mod_Q1BSP_LoadLeafs: %s using on-demand PVS cache (%.1f MB uncompressed -> %.2f MB compressed + %.2f MB cache)",
+			loadmodel->model_name,
+			pvs_alloc_size / (1024.0 * 1024.0),
+			loadmodel->brushq1.num_compressedpvs / (1024.0 * 1024.0),
+			((size_t)(MOD_PVSCACHE_SLOTS + 1) * (size_t)pvscache->rowbytes + (size_t)loadmodel->brush.num_pvsclusters * sizeof(int)) / (1024.0 * 1024.0));
+	}
+	else if (pvs_alloc_size > 0)
+	{
+		loadmodel->brush.data_pvsclustersx = (byte *)Mem_Alloc(
+			loadmodel->mempool,
+			pvs_alloc_size
+		);
+		memset(
+			loadmodel->brush.data_pvsclustersx,
+			0xFF,
+			pvs_alloc_size
+		);
+	}
 
 	// FIXME: this function could really benefit from some error checking
 	for ( i=0 ; i<count ; i++, out++)
 	{
+		if ((i & 4095) == 0)
+			Sys_PumpLoadingEvents();
 		out->contents = MSG_ReadLittleLong(sb);
 
 		out->clusterindex = i - 1;
@@ -3124,8 +3296,9 @@ static void Mod_Q1BSP_LoadLeafs(sizebuf_t *sb)
 		{
 			if (p >= loadmodel->brushq1.num_compressedpvs)
 				Con_PrintLinef ("Mod_Q1BSP_LoadLeafs: invalid visofs");
+			else if (loadmodel->brushq1.pvscache)
+				loadmodel->brushq1.data_cluster_visofs[out->clusterindex] = p;
 			else {
-#if 1
 				size_t cluster_offset0 = (size_t)out->clusterindex * (size_t)loadmodel->brush.num_pvsclusterbytes;
 				size_t cluster_offset1 = (size_t)(out->clusterindex + 1) * (size_t)loadmodel->brush.num_pvsclusterbytes;
 				Mod_BSP_DecompressVis(
@@ -3134,14 +3307,6 @@ static void Mod_Q1BSP_LoadLeafs(sizebuf_t *sb)
 					loadmodel->brush.data_pvsclustersx + cluster_offset0,
 					loadmodel->brush.data_pvsclustersx + cluster_offset1
 				);
-#else
-				Mod_BSP_DecompressVis(
-					loadmodel->brushq1.data_compressedpvs + p,
-					loadmodel->brushq1.data_compressedpvs + loadmodel->brushq1.num_compressedpvs,
-					loadmodel->brush.data_pvsclustersx + out->clusterindex * loadmodel->brush.num_pvsclusterbytes,
-					loadmodel->brush.data_pvsclustersx + (out->clusterindex + 1) * loadmodel->brush.num_pvsclusterbytes
-				);
-#endif
 			}
 		}
 
@@ -3205,7 +3370,7 @@ static qbool Mod_Q1BSP_CheckWaterAlphaSupport(void)
 	mleaf_t *leaf;
 	const unsigned char *pvs;
 	// if there's no vis data, assume supported (because everything is visible all the time)
-	if (!loadmodel->brush.data_pvsclustersx)
+	if (!loadmodel->brush.data_pvsclustersx && !loadmodel->brushq1.pvscache)
 		return true;
 	// check all liquid leafs to see if they can see into empty leafs, if any
 	// can we can assume this map supports r_wateralpha
@@ -3213,15 +3378,11 @@ static qbool Mod_Q1BSP_CheckWaterAlphaSupport(void)
 	{
 		if ((leaf->contents == CONTENTS_WATER_NEG3 || leaf->contents == CONTENTS_SLIME_NEG4) && leaf->clusterindex >= 0)
 		{
-#if 1 // Baker: Jan 4 2026 related to Jun 2 2024
-			// Baker: clusterindex can be -1, but above if statement prevents us from coming here.
-			size_t cluster_offset = (size_t)leaf->clusterindex * (size_t)loadmodel->brush.num_pvsclusterbytes;
-			pvs = loadmodel->brush.data_pvsclustersx + cluster_offset;
-#else
-			pvs = loadmodel->brush.data_pvsclustersx + leaf->clusterindex * loadmodel->brush.num_pvsclusterbytes;
-#endif
+			pvs = Mod_BSP_GetClusterPVS(loadmodel, leaf->clusterindex);
+			if (!pvs)
+				return true;
 			for (j = 0;j < loadmodel->brush.num_leafs;j++)
-				if (CHECKPVSBIT(pvs, loadmodel->brush.data_leafs[j].clusterindex) && loadmodel->brush.data_leafs[j].contents == CONTENTS_EMPTY_NEG1)
+				if (loadmodel->brush.data_leafs[j].clusterindex >= 0 && CHECKPVSBIT(pvs, loadmodel->brush.data_leafs[j].clusterindex) && loadmodel->brush.data_leafs[j].contents == CONTENTS_EMPTY_NEG1)
 					return true;
 		}
 	}
@@ -3915,15 +4076,8 @@ static unsigned char *Mod_BSP_GetPVS(model_t *model, const vec3_t p)
 #if 0
 	int clusterindex = ((mleaf_t *)node)->clusterindex;
 #endif
-	if (((mleaf_t *)node)->clusterindex >= 0) {
-#if 1 // Jan 4 2026 related to Jun 2 2024
-		// Baker: clusterindex can be -1, but above if statement prevents us from coming here.
-		size_t cluster_offset = (size_t)((mleaf_t *)node)->clusterindex * (size_t)model->brush.num_pvsclusterbytes;
-		return model->brush.data_pvsclustersx + cluster_offset;
-#else
-		return model->brush.data_pvsclusters + ((mleaf_t *)node)->clusterindex * model->brush.num_pvsclusterbytes;
-#endif
-	}
+	if (((mleaf_t *)node)->clusterindex >= 0)
+		return Mod_BSP_GetClusterPVS(model, ((mleaf_t *)node)->clusterindex);
 	else
 		return NULL;
 }
@@ -3946,18 +4100,7 @@ static void Mod_BSP_FatPVS_RecursiveBSPNode(model_t *model, const vec3_t org, ve
 	}
 	// if this leaf is in a cluster, accumulate the pvs bits
 	if (((mleaf_t *)node)->clusterindex >= 0)
-	{
-		int i;
-#if 1 // Jan 4 2026 related to Jun 2 2024
-		// Baker: clusterindex can be -1, but above if statement prevents us from coming here.
-		size_t cluster_offset = (size_t)((mleaf_t *)node)->clusterindex * (size_t)model->brush.num_pvsclusterbytes;
-		unsigned char *pvs = model->brush.data_pvsclustersx + cluster_offset;
-#else
-		unsigned char *pvs = model->brush.data_pvsclusters + ((mleaf_t *)node)->clusterindex * model->brush.num_pvsclusterbytes;
-#endif
-		for (i = 0;i < pvsbytes;i++)
-			pvsbuffer[i] |= pvs[i];
-	}
+		Mod_BSP_OrClusterPVS(model, ((mleaf_t *)node)->clusterindex, pvsbuffer, pvsbytes);
 }
 
 //Calculates a PVS that is the inclusive or of all leafs within radius pixels
@@ -4233,16 +4376,32 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 		mod->brush.qw_md4sum2 ^= LittleLong(temp);
 	}
 
+	double t_load_start = Sys_DirtyTime(), t_stage, t_tex_s = 0, t_faces_s = 0, t_leafs_s = 0, t_sub_s = 0, t_vbo_s = 0;
+	qbool is_large_bsp = (lumpsb[LUMP_FACES].cursize > 65536);
+
 	Mod_Q1BSP_LoadEntities(&lumpsb[LUMP_ENTITIES]);
 	Mod_Q1BSP_LoadVertexes(&lumpsb[LUMP_VERTEXES]);
 	Mod_Q1BSP_LoadEdges(&lumpsb[LUMP_EDGES]);
 	Mod_Q1BSP_LoadSurfedges(&lumpsb[LUMP_SURFEDGES]);
+	if (is_large_bsp)
+		SCR_UpdateLoadingScreenMsg("Loading world textures...");
+	t_stage = Sys_DirtyTime();
 	Mod_Q1BSP_LoadTextures(&lumpsb[LUMP_TEXTURES]);
+	t_tex_s = Sys_DirtyTime() - t_stage;
+	Sys_PumpLoadingEvents();
+	if (is_large_bsp)
+		SCR_UpdateLoadingScreenMsg("Loading world lighting & geometry...");
+	t_stage = Sys_DirtyTime();
 	Mod_Q1BSP_LoadLighting(&lumpsb[LUMP_LIGHTING]);
 	Mod_Q1BSP_LoadPlanes(&lumpsb[LUMP_PLANES]);
 	Mod_Q1BSP_LoadTexinfo(&lumpsb[LUMP_TEXINFO]);
 	Mod_Q1BSP_LoadFaces(&lumpsb[LUMP_FACES]);
 	Mod_Q1BSP_LoadLeaffaces(&lumpsb[LUMP_MARKSURFACES]);
+	t_faces_s = Sys_DirtyTime() - t_stage;
+	Sys_PumpLoadingEvents();
+	if (is_large_bsp)
+		SCR_UpdateLoadingScreenMsg("Loading world visibility...");
+	t_stage = Sys_DirtyTime();
 
 	qbool did_load_external_vis = false;
 	do {
@@ -4340,6 +4499,8 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 
 	Mod_Q1BSP_LoadNodes(&lumpsb[LUMP_NODES]);
 	Mod_Q1BSP_LoadClipnodes(&lumpsb[LUMP_CLIPNODES], &hullinfo);
+	t_leafs_s = Sys_DirtyTime() - t_stage;
+	Sys_PumpLoadingEvents();
 
 	for (i = 0; i < HEADER_LUMPS_15; i++) {
 		if (did_load_external_vis && isin2 (i, LUMP_VISIBILITY_4, LUMP_LEAFS_10))
@@ -4351,11 +4512,15 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 	// check if the map supports transparent water rendering
 	loadmodel->brush.supportwateralpha = Mod_Q1BSP_CheckWaterAlphaSupport();
 
-	// we don't need the compressed pvs data anymore
-	if (mod->brushq1.data_compressedpvs)
-		Mem_Free(mod->brushq1.data_compressedpvs);
-	mod->brushq1.data_compressedpvs = NULL;
-	mod->brushq1.num_compressedpvs = 0;
+	// we don't need the compressed pvs data anymore (unless using on-demand PVS decompression)
+	if (!mod->brushq1.pvscache)
+	{
+		if (mod->brushq1.data_compressedpvs)
+			Mem_Free(mod->brushq1.data_compressedpvs);
+		mod->brushq1.data_compressedpvs = NULL;
+		mod->brushq1.num_compressedpvs = 0;
+	}
+	Sys_PumpLoadingEvents();
 
 	// Baker r0100
 	Mod_Q1BSP_MakeHull0();
@@ -4420,10 +4585,16 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 	}
 	datapointer = (unsigned char *)Mem_Alloc(mod->mempool, mod->num_surfaces * sizeof(int) + totalstyles * sizeof(model_brush_lightstyleinfo_t) + totalstylesurfaces * sizeof(int *));
 	mod->modelsurfaces_sorted = (int*)datapointer;datapointer += mod->num_surfaces * sizeof(int);
+	if (is_large_bsp)
+		SCR_UpdateLoadingScreenMsg("Building world meshes...");
+	t_stage = Sys_DirtyTime();
 	for (i = 0;i < mod->brush.numsubmodels;i++)
 	{
 		// LadyHavoc: this code was originally at the end of this loop, but
 		// has been transformed to something more readable at the start here.
+
+		if ((i & 31) == 0)
+			Sys_PumpLoadingEvents();
 
 		if (i > 0)
 		{
@@ -4433,6 +4604,9 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 			mod = Mod_FindName(name, loadmodel->model_name);
 			// copy the base model to this one
 			*mod = *loadmodel;
+			memset(&mod->render_bih, 0, sizeof(mod->render_bih));
+			memset(&mod->collision_bih, 0, sizeof(mod->collision_bih));
+			mod->brushq1.render_bih_tried = false;
 			// rename the clone back to its proper name
 			c_strlcpy (mod->model_name, name);
 			mod->brush.parentmodel = loadmodel;
@@ -4542,7 +4716,14 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 		//mod->brushq1.num_visleafs = bm->visleafs;
 
 		// build a Bounding Interval Hierarchy for culling triangles in light rendering
-		Mod_MakeCollisionBIH(mod, true, &mod->render_bih);
+		if (!mod_q1bsp_lazy_render_bih.integer || mod_q1bsp_polygoncollisions.integer || r_shadow_realtime_dlight.integer || r_shadow_realtime_world.integer)
+		{
+			Mod_MakeCollisionBIH(mod, true, &mod->render_bih);
+		}
+		else if (i == 0 && is_large_bsp)
+		{
+			Con_DPrintLinef ("Mod_Q1BSP_Load: deferring render_bih for %s (mod_q1bsp_lazy_render_bih)", mod->model_name);
+		}
 
 		if (mod_q1bsp_polygoncollisions.integer /*d:0*/)
 		{
@@ -4557,17 +4738,29 @@ int Mod_Q1BSP_Load(model_t *mod, void *buffer, void *bufferend)
 		// generate VBOs and other shared data before cloning submodels
 		if (i == 0)
 		{
+			double t_vbo_start = Sys_DirtyTime();
+			Sys_PumpLoadingEvents();
 			Mod_BuildVBOs();
+			t_vbo_s = Sys_DirtyTime() - t_vbo_start;
+			Sys_PumpLoadingEvents();
 			Mod_Q1BSP_LoadMapBrushes();
 			//Mod_Q1BSP_ProcessLightList();
 		}
 	}
+	t_sub_s = (Sys_DirtyTime() - t_stage) - t_vbo_s;
 	mod = loadmodel;
 
 	// make the model surface list (used by shadowing/lighting)
 	Mod_MakeSortedSurfaces(loadmodel);
 
 	Con_DPrintLinef ("Stats for q1bsp model " QUOTED_S ": %d faces, %d nodes, %d leafs, %d visleafs, %d visleafportals, mesh: %d vertices, %d triangles, %d surfaces", loadmodel->model_name, loadmodel->num_surfaces, loadmodel->brush.num_nodes, loadmodel->brush.num_leafs, mod->brush.num_pvsclusters, loadmodel->brush.num_portals, loadmodel->surfmesh.num_vertices, loadmodel->surfmesh.num_triangles, loadmodel->num_surfaces);
+	{
+		double t_total = Sys_DirtyTime() - t_load_start;
+		if (t_total >= 5.0)
+			Con_PrintLinef ("Mod_Q1BSP_Load(%s): total %.2fs (tex %.2fs, faces %.2fs, leafs %.2fs, submodels/bih %.2fs, vbo %.2fs)", loadmodel->model_name, t_total, t_tex_s, t_faces_s, t_leafs_s, t_sub_s, t_vbo_s);
+		else if (is_large_bsp)
+			Con_DPrintLinef ("Mod_Q1BSP_Load(%s): total %.2fs (tex %.2fs, faces %.2fs, leafs %.2fs, submodels/bih %.2fs, vbo %.2fs)", loadmodel->model_name, t_total, t_tex_s, t_faces_s, t_leafs_s, t_sub_s, t_vbo_s);
+	}
 	return true;
 }
 
@@ -7753,6 +7946,24 @@ bih_t *Mod_MakeCollisionBIH(model_t *model, qbool userendersurfaces, bih_t *out)
 	return out;
 }
 
+void Mod_Q1BSP_EnsureRenderBIH(model_t *mod)
+{
+	model_t *saved_loadmodel;
+	model_t *owner;
+	if (!mod || mod->render_bih.leafs != NULL || mod->brushq1.render_bih_tried)
+		return;
+	mod->brushq1.render_bih_tried = true;
+	if (mod->submodelsurfaces_start >= mod->submodelsurfaces_end)
+		return;
+	owner = mod->brush.parentmodel ? mod->brush.parentmodel : mod;
+	if (!owner->mempool)
+		return;
+	saved_loadmodel = loadmodel;
+	loadmodel = owner;
+	Mod_MakeCollisionBIH(mod, true, &mod->render_bih);
+	loadmodel = saved_loadmodel;
+}
+
 static int Mod_Q3BSP_SuperContentsFromNativeContents(int nativecontents)
 {
 	int supercontents = 0;
@@ -8805,9 +9016,14 @@ void Mod_BrushInit(void)
 	Cvar_RegisterVariable(&mod_q3shader_force_addalpha);
 	Cvar_RegisterVariable(&mod_q3shader_force_terrain_alphaflag);
 	Cvar_RegisterVariable(&mod_q1bsp_polygoncollisions);
+	Cvar_RegisterVariable(&mod_q1bsp_pvs_ondemand);
+	Cvar_RegisterVariable(&mod_q1bsp_lazy_render_bih);
 	Cvar_RegisterVariable(&mod_bsp_lightpointcache);
 	Cvar_RegisterVariable(&mod_q1bsp_zero_hullsize_cutoff);
 	Cvar_RegisterVariable(&mod_recalculatenodeboxes);
+
+	if (!mod_pvscache_mutex && Thread_HasThreads())
+		mod_pvscache_mutex = Thread_CreateMutex();
 
 	// these games were made for older DP engines and are no longer
 	// maintained; use this hack to show their textures properly

@@ -1185,7 +1185,9 @@ int SV_ModelIndex(const char *s, int precachemode)
 				if (sv.state == ss_loading)
 				{
 					// running from SV_SpawnServer which is launched from the client console command interpreter
+					Sys_PumpLoadingEvents();
 					sv.models[i] = Mod_ForName (sv.model_precache[i], /*crash?*/ true, /*checkdisk?*/ false, s[0] == '*' ? sv.worldname : NULL);
+					Sys_PumpLoadingEvents();
 				}
 				else
 				{

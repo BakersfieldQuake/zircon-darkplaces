@@ -4,6 +4,8 @@
 #include "qtypes.h"
 #include "model_brush.h"
 
+struct mod_pvscache_s;
+
 typedef struct model_brushq1_s
 {
 	mmodel_t		*submodels;
@@ -27,6 +29,8 @@ typedef struct model_brushq1_s
 
 	int				num_compressedpvs;
 	unsigned char			*data_compressedpvs;
+	int				*data_cluster_visofs;
+	struct mod_pvscache_s	*pvscache;
 
 	int				num_lightdata;
 	unsigned char			*lightdata;
@@ -39,6 +43,7 @@ typedef struct model_brushq1_s
 	// this contains bytes that are 1 if a surface needs its lightmap rebuilt
 	unsigned char *lightmapupdateflags;
 	qbool firstrender; // causes all surface lightmaps to be loaded in first frame
+	qbool render_bih_tried; // avoids repeated lazy BIH attempts on 0-triangle submodels
 }
 model_brushq1_t;
 

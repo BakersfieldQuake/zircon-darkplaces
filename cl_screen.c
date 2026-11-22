@@ -1665,6 +1665,7 @@ void CL_UpdateScreen(void)
 
 	if (scr_loading_ex)
 	{
+		Sys_PumpLoadingEvents();
 		if (!loadingscreenstack && !cls.connect_trying && (cls.state != ca_connected || cls.signon == SIGNONS_4))
 			SCR_EndLoadingPlaque(); // SCR_ClearLoadingScreenTexture
 		else if (scr_loadingscreen_maxfps.value)

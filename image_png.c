@@ -59,7 +59,7 @@
 
 	#include "lodepng.h"
 
-	unsigned char *PNG_LoadImage_BGRA (const unsigned char *pbytes, int data_size, int *miplevel_unused)
+	unsigned char *PNG_LoadImage_BGRA (const unsigned char *pbytes, int data_size, int *miplevel)
 	{
 		byte *lodepng_data = NULL;
 		unsigned uwidth, uheight, lodepng_error, numpels;
@@ -67,37 +67,59 @@
 		lodepng_error = lodepng_decode32 (&lodepng_data, &uwidth, &uheight, pbytes, (size_t) data_size);
 
 		if (lodepng_error) {
+			if (lodepng_data)
+				free (lodepng_data);
+			Con_PrintLinef (CON_WARN "PNG_LoadImage_BGRA: decode failed (error %u: %s)", lodepng_error, lodepng_error_text(lodepng_error));
 			return NULL;
-			//log_fatal("error %u: %s", error, lodepng_error_text(error)); return NULL;
+		}
+
+		if (uwidth == 0 || uheight == 0 || uwidth > 32768 || uheight > 32768) {
+			free (lodepng_data);
+			Con_PrintLinef (CON_WARN "PNG_LoadImage_BGRA: invalid image dimensions %ux%u", uwidth, uheight);
+			return NULL;
 		}
 
 		// Baker: we have some globals here
 		image_width = (int)uwidth;
 		image_height = (int)uheight;
-		numpels = image_width * image_height;
 
-		unsigned char *image_data = NULL;
-
-		image_data = (unsigned char *)Mem_Alloc(tempmempool, numpels * 4);
-
-		if (image_data) {
-			memcpy (image_data, lodepng_data, numpels * 4);
+		// Early in-place picmip downscale before allocating tempmempool buffer (matches JPEG_LoadImage_BGRA)
+		// Cuts peak RAM on 2048x2048 PNGs from 16+16 MB down to 16+4 MB (picmip 1) or 16+1 MB (picmip 2)
+		if (miplevel && *miplevel > 0) {
+			int depth = 1;
+			while (*miplevel > 0 && (image_width > 1 || image_height > 1)
+				&& ((image_width & 1) == 0 || image_width == 1)
+				&& ((image_height & 1) == 0 || image_height == 1))
+			{
+				int destw = image_width > 1 ? (image_width >> 1) : 1;
+				int desth = image_height > 1 ? (image_height >> 1) : 1;
+				Image_MipReduce32(lodepng_data, lodepng_data, &image_width, &image_height, &depth, destw, desth, 1);
+				(*miplevel)--;
+			}
 		}
 
-		free (lodepng_data);
+		numpels = (unsigned)(image_width * image_height);
+
+		unsigned char *image_data = (unsigned char *)Mem_Alloc(tempmempool, (size_t)numpels * 4);
 
 		if (!image_data) {
+			free (lodepng_data);
 			Con_PrintLinef ("PNG_LoadImage : not enough memory");
 			return NULL;
 		}
 
-		// swizzle RGBA to BGRA
-		unsigned y, c;
-		for (y = 0; y < (unsigned int)(image_width * image_height * 4); y += 4) {
-			c = image_data[y+0];
-			image_data[y+0] = image_data[y+2];
-			image_data[y+2] = c;
+		// Copy and swizzle RGBA -> BGRA in one pass, then release lodepng's C-heap buffer immediately
+		{
+			size_t y, nbytes = (size_t)numpels * 4;
+			for (y = 0; y < nbytes; y += 4) {
+				image_data[y+0] = lodepng_data[y+2];
+				image_data[y+1] = lodepng_data[y+1];
+				image_data[y+2] = lodepng_data[y+0];
+				image_data[y+3] = lodepng_data[y+3];
+			}
 		}
+
+		free (lodepng_data);
 
 		return image_data;
 	}

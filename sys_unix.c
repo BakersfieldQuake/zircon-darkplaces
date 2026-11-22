@@ -42,6 +42,7 @@ void Sys_Error (const char *error, ...)
 	va_end (argptr);
 
 	Con_PrintLinef (CON_ERROR "Engine Error: %s", text);
+	Log_Close ();
 
 	//Host_Shutdown ();
 	exit (1);

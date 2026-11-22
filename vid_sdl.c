@@ -1259,6 +1259,31 @@ void IN_Keyboard_Acquire(void)
 
 #endif // !_WIN32
 
+// Pump OS window messages during long synchronous loads so Windows does not mark the window "Not Responding" (Event 1002).
+// Throttled to ~10 Hz and avoids dispatching gameplay key/mouse bindings mid-load while still honoring window close (SDL_QUIT).
+void Sys_PumpLoadingEvents( void )
+{
+	static double last_pump = 0;
+	double now;
+
+	if (cls.state == ca_dedicated || !window)
+		return;
+
+	now = Sys_DirtyTime();
+	if (now >= last_pump && now - last_pump < 0.08)
+		return;
+	last_pump = now;
+
+	SDL_PumpEvents();
+	if ((scr_loading_ex || host.state != host_active) && SDL_HasEvent(SDL_QUIT))
+	{
+		Con_PrintLinef ("Quit requested during loading; exiting cleanly.");
+		Log_Close ();
+		SDL_Quit ();
+		exit (0);
+	}
+}
+
 // SDL2
 void Sys_SendKeyEvents( void )
 {

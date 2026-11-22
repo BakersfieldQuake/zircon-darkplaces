@@ -267,6 +267,8 @@ void R_Nearest_Conchars_Callback(cvar_t *var);
 extern cvar_t r_nearest_conchars; 
 
 extern cvar_t gl_texturemode_cvar;
+extern cvar_t gl_picmip_force;
+extern cvar_t gl_picmip_world;
 const char *TexFilterNameForNum (int num);
 
 #endif

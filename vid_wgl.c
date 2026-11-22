@@ -437,6 +437,36 @@ void Sys_SendKeyEvents (void)
 	}
 }
 
+void Sys_PumpLoadingEvents (void)
+{
+	static double last_pump = 0;
+	double now = Sys_DirtyTime();
+	MSG msg;
+
+	if (now >= last_pump && now - last_pump < 0.08)
+		return;
+	last_pump = now;
+
+	if (!scr_loading_ex && host.state == host_active)
+		return;
+
+	while (PeekMessage (&msg, NULL, 0, 0, PM_REMOVE))
+	{
+		if (msg.message == WM_QUIT)
+		{
+			Log_Close ();
+			exit (0);
+		}
+		// Skip keyboard/mouse input dispatch mid-load to avoid re-entrant Key_Event() calls
+		if ((msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST)
+			|| (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST)
+			|| msg.message == WM_INPUT)
+			continue;
+		TranslateMessage (&msg);
+		DispatchMessage (&msg);
+	}
+}
+
 LONG CDAudio_MessageHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 

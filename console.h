@@ -126,6 +126,7 @@ void Log_Init (void);
 void Log_Close (void);
 void Log_Start (void);
 void Log_DestBuffer_Flush (void); ///< call this once per frame to send out replies to rcon streaming clients
+extern char crt_log_file [MAX_OSPATH];
 
 void Log_Printf(const char *logfilename, const char *fmt, ...) DP_FUNC_PRINTF(2);
 //@}

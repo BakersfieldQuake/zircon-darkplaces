@@ -563,8 +563,13 @@ Log_Close
 */
 void Log_Close (void)
 {
-	qfile_t *logfilecopy = logfile;
+	qfile_t *logfilecopy;
 
+	// If an error occurred before Log_Start() ran, flush the queued startup log to disk first
+	if (logfile == NULL && logqueue != NULL && log_file.string[0] != '\0' && fs_gamedir[0] != '\0')
+		Log_Start ();
+
+	logfilecopy = logfile;
 	if (logfile == NULL)
 		return;
 
@@ -627,11 +632,31 @@ Log_ConPrint
 void Log_ConPrint (const char *msg)
 {
 	static qbool inprogress = false;
+	static char log_early_attempted[MAX_OSPATH] = "";
 
 	// don't allow feedback loops with memory error reports
 	if (inprogress)
 		return;
 	inprogress = true;
+
+	// Once fs_gamedir is ready and log_file is set (e.g. +log_file during Host_AddConfigText before +map/video),
+	// start logging immediately so startup +map OOMs/errors are never lost in logqueue.
+	if (logqueue != NULL && log_file.string[0] != '\0' && fs_gamedir[0] != '\0'
+		&& strcmp(log_early_attempted, log_file.string) != 0)
+	{
+		strlcpy(log_early_attempted, log_file.string, sizeof(log_early_attempted));
+		Log_Open ();
+		if (logfile != NULL)
+		{
+			unsigned char *temp = logqueue;
+			logqueue = NULL;
+			if (logq_ind != 0)
+				FS_Write (logfile, temp, logq_ind);
+			Mem_Free (temp);
+			logq_ind = 0;
+			logq_size = 0;
+		}
+	}
 
 	// Until the host is completely initialized, we maintain a log queue
 	// to store the messages, since the log can't be started before
@@ -672,13 +697,23 @@ void Log_ConPrint (const char *msg)
 	{
 		if (log_file_stripcolors.integer)
 		{
-			// sanitize msg
+			// sanitize msg on the stack when possible so logging during OOM never calls Mem_Alloc
+			char stackbuf[4096];
 			size_t len = strlen(msg);
-			char *sanitizedmsg = (char *)Mem_Alloc(tempmempool, len + 1);
-			memcpy (sanitizedmsg, msg, len);
-			SanitizeString(sanitizedmsg, sanitizedmsg); // SanitizeString's in pointer is always ahead of the out pointer, so this should work.
-			FS_Print (logfile, sanitizedmsg);
-			Mem_Free(sanitizedmsg);
+			if (len < sizeof(stackbuf))
+			{
+				memcpy (stackbuf, msg, len + 1);
+				SanitizeString(stackbuf, stackbuf); // SanitizeString's in pointer is always ahead of the out pointer, so this should work.
+				FS_Print (logfile, stackbuf);
+			}
+			else
+			{
+				char *sanitizedmsg = (char *)Mem_Alloc(tempmempool, len + 1);
+				memcpy (sanitizedmsg, msg, len + 1);
+				SanitizeString(sanitizedmsg, sanitizedmsg);
+				FS_Print (logfile, sanitizedmsg);
+				Mem_Free(sanitizedmsg);
+			}
 		}
 		else
 		{

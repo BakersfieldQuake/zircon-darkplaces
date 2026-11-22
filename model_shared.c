@@ -507,7 +507,9 @@ model_t *Mod_LoadModel(model_t *mod, qbool crash, qbool checkdisk)
 
 				// Matched. Load it.
 				RELATED_ (Mod_IDP0_Load)
+				Sys_PumpLoadingEvents();
 				int res = loader[i].Load(mod, buf, bufend);
+				Sys_PumpLoadingEvents();
 				Mem_Free(buf);
 
 				if (res == false) {
@@ -1913,6 +1915,14 @@ qbool Mod_LoadTextureFromQ3Shader(mempool_t *mempool, const char *modelname, tex
 		texflagsor |= TEXF_ISWORLD;
 	if (defaulttexflags & TEXF_ISSPRITE)
 		texflagsor |= TEXF_ISSPRITE;
+	// gl_picmip_force 1: override shader nopicmip on 3D world/model textures (never affects 2D HUD/fonts/lightmaps/rendertargets)
+	if (gl_picmip_force.integer)
+	{
+		if (defaulttexflags & TEXF_PICMIP)
+			texflagsor |= TEXF_PICMIP;
+		if (defaulttexflags & TEXF_COMPRESS)
+			texflagsor |= TEXF_COMPRESS;
+	}
 	// unless later loaded from the shader
 	texture->offsetmapping = (mod_noshader_default_offsetmapping.value) /*defaults 1*/ ? OFFSETMAPPING_DEFAULT : OFFSETMAPPING_OFF;
 	texture->offsetscale = 1;

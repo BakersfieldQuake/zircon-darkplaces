@@ -57,12 +57,17 @@ Combine and scale multiple lightmaps into the 8.8 format in blocklights
 // Reason is no model->brushq1.num_lightstyles
 void R_BuildLightMap (const entity_render_t *ent, msurface_t *surface, int combine)
 {
+	static unsigned int r_buildlightmap_pump = 0;
 	int smax, tmax, i, size, size3, maps, l;
 	int *bl, scale;
 	unsigned char *lightmap, *out, *stain;
 	model_t *model = ent->model;
 	int *intblocklights;
 	unsigned char *templight;
+
+	if ((scr_loading_ex || host.state != host_active || r_refdef.stats[r_stat_lightmapupdates] > 256)
+		&& (++r_buildlightmap_pump & 255) == 0)
+		Sys_PumpLoadingEvents();
 
 	smax = (surface->lightmapinfo->extents[0]>>4)+1;
 	tmax = (surface->lightmapinfo->extents[1]>>4)+1;
@@ -1237,6 +1242,11 @@ static void R_Q1BSP_CallRecursiveGetLightInfo(r_q1bsp_getlightinfo_t *info, qboo
 
 	info->svbsp_insertoccluder = false;
 	// use BIH culling on single leaf maps (generally this only happens if running a model as a map), otherwise use BSP culling to make use of vis data
+	if (r_shadow_usebihculling.integer > 0 && (r_shadow_usebihculling.integer == 2 || info->model->brush.num_leafs == 1))
+	{
+		if (info->model->render_bih.leafs == NULL && info->model->type == mod_brushq1)
+			Mod_Q1BSP_EnsureRenderBIH(info->model);
+	}
 	if (r_shadow_usebihculling.integer > 0 && (r_shadow_usebihculling.integer == 2 || info->model->brush.num_leafs == 1) && info->model->render_bih.leafs != NULL)
 	{
 		R_Q1BSP_RecursiveGetLightInfo_BSP(info, true);

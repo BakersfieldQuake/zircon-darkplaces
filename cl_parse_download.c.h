@@ -26,6 +26,7 @@ RELATED_ (CL_SignonReply SIGNON_1 sends us here)
 // Baker: Might as well be "next download"
 static void CL_BeginDownloads_DP (qbool aborteddownload)
 {
+	static double precache_start_time = 0;
 	char vabuf[1024];
 	// quakeworld works differently
 	if (cls.protocol == PROTOCOL_QUAKEWORLD)
@@ -40,7 +41,10 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 	// if we got here...
 	// curl is done, so let's start with the business
 	if (!cl.loadbegun)
+	{
+		precache_start_time = Sys_DirtyTime();
 		SCR_PushLoadingScreen("Loading precaches", 1);
+	}
 	cl.loadbegun = true;
 
 	// if already downloading something from the previous level, don't stop it
@@ -91,7 +95,10 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 			);
 		}
 		for (; cl.loadmodel_current < cl.loadmodel_total;cl.loadmodel_current++) {
-			SCR_PushLoadingScreen(cl.model_name[cl.loadmodel_current],
+			char loadmsg[MAX_QPATH_128];
+			Sys_PumpLoadingEvents();
+			dpsnprintf(loadmsg, sizeof(loadmsg), "Loading models (%d/%d): %s", cl.loadmodel_current, cl.loadmodel_total, cl.model_name[cl.loadmodel_current]);
+			SCR_PushLoadingScreen(loadmsg,
 				(
 					(cl.loadmodel_current == 1) ? LOADPROGRESSWEIGHT_WORLDMODEL : LOADPROGRESSWEIGHT_MODEL
 				) / (
@@ -166,7 +173,10 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 			);
 		for (;cl.loadsound_current < cl.loadsound_total;cl.loadsound_current++)
 		{
-			SCR_PushLoadingScreen(cl.sound_name[cl.loadsound_current], 1.0 / cl.loadsound_total);
+			char loadmsg[MAX_QPATH_128];
+			Sys_PumpLoadingEvents();
+			dpsnprintf(loadmsg, sizeof(loadmsg), "Loading sounds (%d/%d): %s", cl.loadsound_current, cl.loadsound_total, cl.sound_name[cl.loadsound_current]);
+			SCR_PushLoadingScreen(loadmsg, 1.0 / cl.loadsound_total);
 			if (cl.sound_precache[cl.loadsound_current] && S_IsSoundPrecached(cl.sound_precache[cl.loadsound_current]))
 			{
 				SCR_PopLoadingScreen(false);
@@ -197,6 +207,7 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 		// loading models
 
 		for (;cl.downloadmodel_current < cl.loadmodel_total;cl.downloadmodel_current++) {
+			Sys_PumpLoadingEvents();
 			if (aborteddownload) {
 				if (cl.downloadmodel_current == 1) {
 					// the worldmodel failed, but we need to set up anyway
@@ -259,6 +270,7 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 
 		for (;cl.downloadsound_current < cl.loadsound_total;cl.downloadsound_current++) {
 			char soundname[MAX_QPATH_128];
+			Sys_PumpLoadingEvents();
 			if (aborteddownload) {
 				aborteddownload = false;
 				continue;
@@ -286,6 +298,16 @@ static void CL_BeginDownloads_DP (qbool aborteddownload)
 	}
 
 	SCR_PopLoadingScreen(false);
+
+	if (precache_start_time > 0)
+	{
+		double dt = Sys_DirtyTime() - precache_start_time;
+		precache_start_time = 0;
+		if (dt >= 5.0)
+			Con_PrintLinef ("CL_BeginDownloads_DP: precache finished in %.2fs (%d models, %d sounds)", dt, cl.loadmodel_total, cl.loadsound_total);
+		else
+			Con_DPrintLinef ("CL_BeginDownloads_DP: precache finished in %.2fs (%d models, %d sounds)", dt, cl.loadmodel_total, cl.loadsound_total);
+	}
 
 	if (!cl.loadfinished) {
 		cl.loadfinished = true;
