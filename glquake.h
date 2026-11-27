@@ -595,6 +595,12 @@ extern GLboolean(GLAPIENTRY *qglIsFramebuffer)(GLuint framebuffer);
 extern GLboolean(GLAPIENTRY *qglIsQuery)(GLuint qid);
 extern GLboolean(GLAPIENTRY *qglIsRenderbuffer)(GLuint renderbuffer);
 extern GLboolean(GLAPIENTRY *qglUnmapBuffer) (GLenum target);
+extern void *(GLAPIENTRY *qglMapBufferRange) (GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT 0x0002
+#define GL_MAP_INVALIDATE_RANGE_BIT 0x0004
+#define GL_MAP_UNSYNCHRONIZED_BIT 0x0020
+#endif
 extern GLenum(GLAPIENTRY *qglCheckFramebufferStatus)(GLenum target);
 extern GLenum(GLAPIENTRY *qglGetError)(void);
 extern GLint(GLAPIENTRY *qglGetAttribLocation)(GLuint programObj, const GLchar *name);
@@ -959,6 +965,7 @@ extern void (GLAPIENTRY *qglViewport)(GLint x, GLint y, GLsizei width, GLsizei h
 #define qglUniformMatrix3fv glUniformMatrix3fv
 #define qglUniformMatrix4fv glUniformMatrix4fv
 #define qglUnmapBuffer glUnmapBuffer
+#define qglMapBufferRange glMapBufferRange
 #define qglUseProgram glUseProgram
 #define qglValidateProgram glValidateProgram
 #define qglVertexAttrib1d glVertexAttrib1d

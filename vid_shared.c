@@ -232,6 +232,7 @@ GLboolean (GLAPIENTRY *qglIsFramebuffer)(GLuint framebuffer);
 GLboolean (GLAPIENTRY *qglIsQuery)(GLuint qid);
 GLboolean (GLAPIENTRY *qglIsRenderbuffer)(GLuint renderbuffer);
 GLboolean (GLAPIENTRY *qglUnmapBuffer) (GLenum target);
+void *(GLAPIENTRY *qglMapBufferRange) (GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
 GLenum (GLAPIENTRY *qglCheckFramebufferStatus)(GLenum target);
 GLenum (GLAPIENTRY *qglGetError)(void);
 GLint (GLAPIENTRY *qglGetAttribLocation)(GLuint programObj, const GLchar *name);
@@ -612,6 +613,7 @@ static glfunction_t openglfuncs[] =
 	{"core", "glUniformMatrix3fv", (void **) &qglUniformMatrix3fv},
 	{"core", "glUniformMatrix4fv", (void **) &qglUniformMatrix4fv},
 	{"core", "glUnmapBuffer", (void **) &qglUnmapBuffer},
+	{"core", "glMapBufferRange", (void **) &qglMapBufferRange},
 	{"core", "glUseProgram", (void **) &qglUseProgram},
 	{"core", "glValidateProgram", (void **) &qglValidateProgram},
 	{"core", "glVertexAttrib1d", (void **) &qglVertexAttrib1d},

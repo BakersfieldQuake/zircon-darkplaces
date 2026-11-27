@@ -1833,8 +1833,25 @@ void R_Mesh_UpdateMeshBuffer(r_meshbuffer_t *buffer, const void *data, size_t si
 				buffertype = GL_UNIFORM_BUFFER;
 #endif
 			CHECKGLERROR
+#ifdef __APPLE__
+			if (subdata)
+			{
+				// R_BufferData_Store only appends to ranges no pending draw reads,
+				// so skip the implicit sync; glBufferSubData on a buffer referenced
+				// earlier in the frame forces a GPU flush per call on macOS (GL-on-Metal).
+				void *p = qglMapBufferRange(buffertype, offset, size, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+				if (p)
+				{
+					memcpy(p, data, size);
+					qglUnmapBuffer(buffertype);
+				}
+				else
+					qglBufferSubData(buffertype, offset, size, data);
+			}
+#else
 			if (subdata)
 				qglBufferSubData(buffertype, offset, size, data);
+#endif
 			else
 				qglBufferData(buffertype, size, data, buffer->isdynamic ? GL_STREAM_DRAW : GL_STATIC_DRAW);
 			CHECKGLERROR
